@@ -1,0 +1,35 @@
+# Datos sensibles / archivos de entrada
+*.xlsx
+*.xls
+*.xlsm
+*.csv
+*.xml
+*.json
+*.pdf
+
+# Carpetas de datos
+CSV/
+Unzip/
+XML definitivos/
+Zip/
+data/
+
+# Variables de entorno
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Modelos entrenados
+*.pkl
+*.joblib
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Sistema / editor
+.DS_Store
+Thumbs.db
+.vscode/

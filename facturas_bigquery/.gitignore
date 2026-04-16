@@ -1,0 +1,26 @@
+# Datos sensibles
+data/
+*.xlsx
+*.csv
+*.xml
+*.json
+*.pdf
+
+# Variables de entorno
+.env
+
+# Archivos temporales de Python
+__pycache__/
+*.pyc
+
+# Modelos entrenados
+*.pkl
+*.joblib
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Sistema / editor
+.DS_Store
+Thumbs.db
+.vscode/
