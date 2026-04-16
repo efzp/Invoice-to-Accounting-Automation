@@ -8,7 +8,7 @@ from procesamiento_facturas_contabilidad_match import ejecutar_pipeline
 
 ruta_facturas = r"C:/Users/eduar/OneDrive - TCP BAAS S.A.S/Automatización/facturas_bigquery/base datos factura.xlsx"
 ruta_contabilidad = r"C:/Users/eduar/OneDrive - TCP BAAS S.A.S/Automatización/facturas_bigquery/Contabilidad.xlsx"
-carpeta_salida = r"C:\Users\eduar\Downloads"
+carpeta_salida = r"C:/Users/eduar/OneDrive - TCP BAAS S.A.S/Automatización/facturas_bigquery/resultados"
 
 resultados = ejecutar_pipeline(
     ruta_facturas=ruta_facturas,
@@ -130,4 +130,4 @@ with pd.ExcelWriter(ruta_match_excel, engine="openpyxl") as writer:
 print("\nResumen general:")
 print(resumen_general)
 
-print("\nArchivos exportados correctamente en Downloads.")
+print("\nArchivos exportados correctamente en resultados.")
