@@ -1,1 +1,1 @@
-C:\modelos_autogluon\modelo_autogluon_contabilidad_facturas_20260416_140049
+C:\modelos_autogluon\modelo_autogluon_contabilidad_facturas_20260419_042111

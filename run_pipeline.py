@@ -13,22 +13,22 @@ carpeta_salida = base / "resultados"
 carpeta_salida.mkdir(parents=True, exist_ok=True)
 
 ruta_facturas = base / "base datos factura.xlsx"
-ruta_contabilidad = base / "Contabilidad.xlsx"
+ruta_contabilidad = base / "contabilidad.xlsx"
 
 columnas_movimientos = {
     "fecha_mov": "FECHA",
-    "tipo_doc": "TIPO DOC.",
-    "numero_doc": "NÚMERO DOC.",
+    "tipo_doc": "TIPODOC",
+    "numero_doc": "NUMDOC",
     "cuenta": "CUENTA",
-    "nombre_cuenta": "NOMBRE CUENTA",
-    "identidad": "IDENTIDAD",
-    "nombre_tercero": "NOMBRE DEL TERCERO",
+    "nombre_cuenta": "NOM_CUENTA",
+    "identidad": "IDENTIDADTERCERO",
+    "nombre_tercero": "NOMBRETERCERO",
     "concepto": "CONCEPTO",
-    "codigo_centro_costo": "C. DE COSTO",
-    "centro_costo": "CENTRO DE COSTO",
-    "usuario": "USUARIO",
-    "numero_movil": "NÚMERO MÓVIL",
-    "nombre_centro_costo": "NOMBRE C. DE COSTO",
+    "codigo_centro_costo": "CENTRO",
+    "centro_costo": "C_C",
+    "usuario": "CODIGO_USUARIO",
+    "numero_movil": "DOC_FUENTE",
+    "nombre_centro_costo": "NOM_CENTRO",
     "debito": "DEBITO",
     "credito": "CREDITO",
 }
@@ -37,7 +37,7 @@ resultados = ejecutar_pipeline(
     ruta_facturas=str(ruta_facturas),
     ruta_movimientos=str(ruta_contabilidad),
     hoja_facturas=0,
-    hoja_movimientos="CPA",
+    hoja_movimientos=0,
     empresa="empresa_demo",
     columnas_movimientos=columnas_movimientos,
 )
