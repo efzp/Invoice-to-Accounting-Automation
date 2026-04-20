@@ -42,8 +42,8 @@ col_total = "payable_amount"
 min_observaciones = 2
 
 threshold_alta = 0.80
-threshold_media = 0.50
-threshold_baja = 0.03
+threshold_media = 0.60
+threshold_baja = 0.30
 
 
 # =========================================================
