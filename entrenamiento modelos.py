@@ -9,7 +9,7 @@ from autogluon.tabular import TabularPredictor
 
 
 # =========================================================
-# ENTRENAMIENTO
+# CONFIGURACIÓN
 # =========================================================
 
 base = Path(r"C:/Users/eduar/OneDrive - TCP BAAS S.A.S/Automatización/facturas_bigquery")
@@ -27,7 +27,6 @@ target = "target_plantilla_cuentas"
 min_observaciones_por_clase = 3
 
 columnas_excluir = [
-    "empresa",
     "llave_factura",
     "llave_asiento",
     "estado_match",
@@ -37,6 +36,124 @@ columnas_excluir = [
     "plantilla_cuentas",
     "plantilla_cuentas_dc",
 ]
+
+columnas_remover_del_modelo = [
+    "empresa",
+    "nombre_proveedor_modelo",
+    "item1_proveedor_modelo",
+    "descripcion_modelo_norm",
+    "prefijo_factura",
+    "anio",
+    "mes",
+    "trimestre",
+]
+
+columnas_categoricas_forzadas = [
+    "nit_proveedor_norm",
+    "codigo_industria_proveedor_limpio",
+]
+
+
+# =========================================================
+# FUNCIONES AUXILIARES
+# =========================================================
+
+def extraer_primer_codigo_industria(valor):
+    if pd.isna(valor):
+        return pd.NA
+
+    texto = str(valor).strip()
+    if texto == "" or texto.lower() in {"nan", "none", "<na>"}:
+        return pd.NA
+
+    partes = [p.strip() for p in texto.split(";") if p.strip() != ""]
+    if not partes:
+        return pd.NA
+
+    return partes[0]
+
+
+def normalizar_codigo_industria_para_modelo(
+    df: pd.DataFrame,
+    columna: str = "codigo_industria_proveedor_limpio",
+) -> pd.DataFrame:
+    if columna not in df.columns:
+        return df
+
+    df[columna] = df[columna].apply(extraer_primer_codigo_industria)
+    return df
+
+
+def forzar_columna_a_categoria(df: pd.DataFrame, columna: str) -> pd.DataFrame:
+    if columna not in df.columns:
+        return df
+
+    df[columna] = (
+        df[columna]
+        .astype("string")
+        .str.strip()
+        .replace({"": pd.NA, "nan": pd.NA, "None": pd.NA, "<NA>": pd.NA})
+        .astype("category")
+    )
+    return df
+
+
+def imprimir_tabla(titulo: str, df: pd.DataFrame, max_filas: int | None = None) -> None:
+    print(f"\n{titulo}")
+    if df is None or df.empty:
+        print("(sin datos)")
+        return
+
+    salida = df.copy()
+    if max_filas is not None:
+        salida = salida.head(max_filas)
+
+    print(salida.to_string(index=False))
+
+
+def resumen_dataset(df_modelo: pd.DataFrame, df_entrenable: pd.DataFrame) -> pd.DataFrame:
+    return pd.DataFrame([
+        {"indicador": "filas_modelo_original", "valor": len(df_modelo)},
+        {"indicador": "filas_entrenables", "valor": len(df_entrenable)},
+        {"indicador": "columnas_modelo_original", "valor": len(df_modelo.columns)},
+        {"indicador": "variables_predictoras", "valor": len([c for c in df_entrenable.columns if c != target])},
+        {"indicador": "clases_originales", "valor": df_modelo[target].nunique()},
+        {"indicador": "clases_entrenables", "valor": df_entrenable[target].nunique()},
+    ])
+
+
+def resumen_categoricas(df: pd.DataFrame, columnas: list[str]) -> pd.DataFrame:
+    filas = []
+    for col in columnas:
+        if col in df.columns:
+            filas.append({
+                "columna": col,
+                "dtype": str(df[col].dtype),
+                "nulos": int(df[col].isna().sum()),
+                "categorias": int(df[col].nunique(dropna=True)),
+            })
+        else:
+            filas.append({
+                "columna": col,
+                "dtype": "no_existe",
+                "nulos": None,
+                "categorias": None,
+            })
+    return pd.DataFrame(filas)
+
+
+def resumen_predictoras(df: pd.DataFrame, target: str) -> pd.DataFrame:
+    filas = []
+    for col in df.columns:
+        if col == target:
+            continue
+        filas.append({
+            "columna": col,
+            "dtype": str(df[col].dtype),
+            "nulos": int(df[col].isna().sum()),
+            "unicos": int(df[col].nunique(dropna=True)),
+        })
+    return pd.DataFrame(filas).sort_values(["dtype", "columna"]).reset_index(drop=True)
 
 
 # =========================================================
@@ -54,20 +171,29 @@ df_modelo = pd.read_excel(ruta_dataset)
 if target not in df_modelo.columns:
     raise ValueError(f"No existe la columna objetivo: {target}")
 
-print("Dataset cargado")
-print("Ruta:", ruta_dataset)
-print("Filas:", len(df_modelo))
-print("Columnas:", len(df_modelo.columns))
-
 df_modelo = (
     df_modelo
     .dropna(subset=[target])
-    .drop(columns=[c for c in columnas_excluir if c in df_modelo.columns], errors="ignore")
+    .drop(
+        columns=[
+            c for c in (columnas_excluir + columnas_remover_del_modelo)
+            if c in df_modelo.columns
+        ],
+        errors="ignore",
+    )
     .dropna(axis=1, how="all")
     .copy()
 )
 
+df_modelo = normalizar_codigo_industria_para_modelo(
+    df_modelo,
+    "codigo_industria_proveedor_limpio",
+)
+
 df_modelo[target] = df_modelo[target].astype(str)
+
+for col in columnas_categoricas_forzadas:
+    df_modelo = forzar_columna_a_categoria(df_modelo, col)
 
 conteo_clases = df_modelo[target].value_counts()
 clases_validas = conteo_clases[conteo_clases >= min_observaciones_por_clase].index
@@ -81,23 +207,29 @@ if df_entrenable[target].nunique() < 2:
 
 columnas_modelo = [c for c in df_entrenable.columns if c != target]
 
-print("\nDataset después de limpieza")
-print("Filas modelo original:", len(df_modelo))
-print("Filas entrenables:", len(df_entrenable))
-print("Clases originales:", df_modelo[target].nunique())
-print("Clases entrenables:", df_entrenable[target].nunique())
-print("Variables predictoras:", len(columnas_modelo))
+imprimir_tabla(
+    "RESUMEN DATASET",
+    resumen_dataset(df_modelo, df_entrenable)
+)
 
-print("\nVariable objetivo:")
-print(target)
+imprimir_tabla(
+    "COLUMNAS CATEGÓRICAS FORZADAS",
+    resumen_categoricas(df_entrenable, columnas_categoricas_forzadas)
+)
 
-print("\nVariables predictoras:")
-for col in columnas_modelo:
-    print("-", col)
+imprimir_tabla(
+    "VARIABLE OBJETIVO",
+    pd.DataFrame([{"target": target}])
+)
+
+imprimir_tabla(
+    "VARIABLES PREDICTORAS",
+    resumen_predictoras(df_entrenable, target)
+)
 
 
 # =========================================================
-# AUTOGUON
+# AUTOGLOUON
 # =========================================================
 
 predictor = TabularPredictor(
@@ -114,8 +246,7 @@ predictor = TabularPredictor(
 
 leaderboard = predictor.leaderboard(silent=True)
 
-print("\nLeaderboard interno AutoGluon:")
-print(leaderboard)
+imprimir_tabla("LEADERBOARD INTERNO AUTOGLOUON", leaderboard)
 
 
 # =========================================================
@@ -136,7 +267,22 @@ try:
     importancia = predictor.feature_importance(df_entrenable)
 except Exception as e:
     importancia = None
-    print("\nNo se pudo calcular importancia de variables:", e)
+    print(f"\nIMPORTANCIA VARIABLES\nNo se pudo calcular importancia de variables: {e}")
+
+resumen_training = pd.DataFrame([
+    {
+        "accuracy_training_referencia": float(revision_training["acierto"].mean()),
+        "n_registros": len(revision_training),
+        "n_aciertos": int(revision_training["acierto"].sum()),
+        "confianza_promedio": float(revision_training["confianza_prediccion"].mean()),
+    }
+])
+
+imprimir_tabla("RESUMEN TRAINING REFERENCIA", resumen_training)
+
+if importancia is not None:
+    importancia_reset = importancia.reset_index().rename(columns={"index": "variable"})
+    imprimir_tabla("IMPORTANCIA DE VARIABLES", importancia_reset, max_filas=30)
 
 
 # =========================================================
@@ -184,6 +330,9 @@ resumen_entrenamiento = {
     "clases_entrenables": int(df_entrenable[target].nunique()),
     "min_observaciones_por_clase": int(min_observaciones_por_clase),
     "n_variables_predictoras": int(len(columnas_modelo)),
+    "columnas_categoricas_forzadas": [
+        c for c in columnas_categoricas_forzadas if c in df_entrenable.columns
+    ],
     "mejor_modelo_leaderboard": mejor_modelo,
     "score_validacion_interna": (
         float(score_val) if score_val is not None and pd.notna(score_val) else None
@@ -201,20 +350,30 @@ with open(rutas["resumen"], "w", encoding="utf-8") as f:
 with open(rutas["modelo_actual"], "w", encoding="utf-8") as f:
     f.write(str(carpeta_modelo))
 
-
-# =========================================================
-# SALIDA FINAL
-# =========================================================
-
-print("\nEntrenamiento finalizado.")
-print("Modelo guardado en:", carpeta_modelo)
-print("Métricas guardadas en:", carpeta_metricas)
-print("Leaderboard interno:", rutas["leaderboard"])
-print("Resumen entrenamiento:", rutas["resumen"])
-print("Columnas modelo:", rutas["columnas"])
-print("Predicciones training referencia:", rutas["predicciones_training"])
-print("Distribución clases:", rutas["clases"])
-print("Ruta modelo actual:", rutas["modelo_actual"])
+imprimir_tabla(
+    "ARCHIVOS GENERADOS",
+    pd.DataFrame([
+        {"archivo": k, "ruta": str(v)}
+        for k, v in rutas.items()
+        if k != "importancia" or importancia is not None
+    ])
+)
 
 if score_val is not None:
-    print("Score validación interna mejor modelo:", score_val)
+    imprimir_tabla(
+        "RESUMEN FINAL",
+        pd.DataFrame([{
+            "mejor_modelo": mejor_modelo,
+            "score_validacion_interna": float(score_val),
+            "ruta_modelo": str(carpeta_modelo),
+        }])
+    )
+else:
+    imprimir_tabla(
+        "RESUMEN FINAL",
+        pd.DataFrame([{
+            "mejor_modelo": mejor_modelo,
+            "score_validacion_interna": None,
+            "ruta_modelo": str(carpeta_modelo),
+        }])
+    )

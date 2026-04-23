@@ -6,24 +6,21 @@ import numpy as np
 import pandas as pd
 
 
-# =========================================================
-# 1. VALIDACIÓN BÁSICA
-# =========================================================
-
 def es_nulo(x: Any) -> bool:
     if x is None:
         return True
-    if isinstance(x, str) and x.strip().lower() in {"", "nan", "none", "null"}:
+    if isinstance(x, str) and x.strip().lower() in {
+        "",
+        "nan",
+        "none",
+        "null",
+    }:
         return True
     try:
         return bool(pd.isna(x))
     except Exception:
         return False
 
-
-# =========================================================
-# 2. LIMPIEZA DE TEXTO
-# =========================================================
 
 def limpiar_espacios(x: Any) -> Optional[str]:
     if es_nulo(x):
@@ -78,10 +75,6 @@ def normalizar_nit(x: Any) -> Optional[str]:
     return x if x else None
 
 
-# =========================================================
-# 3. CONVERSIONES NUMÉRICAS Y FECHAS
-# =========================================================
-
 def safe_to_numeric(serie: pd.Series) -> pd.Series:
     return pd.to_numeric(serie, errors="coerce")
 
@@ -127,10 +120,6 @@ def safe_datetime(x: Any) -> pd.Timestamp:
         return pd.NaT
 
 
-# =========================================================
-# 4. FUNCIONES DE APOYO
-# =========================================================
-
 def detectar_prefijo_factura(factura_norm: Any) -> Optional[str]:
     if es_nulo(factura_norm):
         return None
@@ -156,6 +145,14 @@ def coalesce_alfa_num(*args: Any) -> Optional[str]:
     return None
 
 
+def coalesce_fecha(*args: Any) -> pd.Timestamp:
+    for x in args:
+        y = pd.to_datetime(x, errors="coerce")
+        if not pd.isna(y):
+            return y
+    return pd.NaT
+
+
 def construir_descripcion_modelo(row: pd.Series) -> Optional[str]:
     posibles = [
         row.get("proveedor_nombre_limpio"),
@@ -177,9 +174,103 @@ def normalizar_nombre_columna(col: Any) -> str:
     return col
 
 
-# =========================================================
-# 5. FUNCIONES PARA PLANTILLAS CONTABLES
-# =========================================================
+def asegurar_columnas(df: pd.DataFrame, columnas: list[str]) -> pd.DataFrame:
+    for col in columnas:
+        if col not in df.columns:
+            df[col] = None
+    return df
+
+
+def primer_valor_no_nulo(serie: pd.Series):
+    for x in serie:
+        if not es_nulo(x):
+            return x
+    return None
+
+
+def moda_o_primero(serie: pd.Series):
+    serie = serie.dropna()
+    if len(serie) == 0:
+        return None
+    moda = serie.mode(dropna=True)
+    return moda.iloc[0] if len(moda) > 0 else serie.iloc[0]
+
+
+def lista_unicos_limpios(serie: pd.Series) -> list[str]:
+    vals = []
+    vistos = set()
+    for x in serie:
+        if es_nulo(x):
+            continue
+        x = limpiar_espacios(x)
+        if x and x not in vistos:
+            vals.append(x)
+            vistos.add(x)
+    return vals
+
+
+def anio_a_texto(anio) -> str:
+    if pd.isna(anio):
+        return "-1"
+    return str(int(anio))
+
+
+def valor_a_texto_llave(x) -> str:
+    if es_nulo(x):
+        return ""
+    return str(x)
+
+
+def construir_llave_factura(
+    nit_proveedor_norm: Any,
+    factura_match_norm: Any,
+) -> str:
+    return (
+        valor_a_texto_llave(nit_proveedor_norm)
+        + "|"
+        + valor_a_texto_llave(factura_match_norm)
+    )
+
+
+def construir_llave_asiento(
+    anio: Any,
+    tipo_doc_norm: Any,
+    numero_doc_norm: Any,
+) -> str:
+    return (
+        anio_a_texto(anio)
+        + "|"
+        + valor_a_texto_llave(tipo_doc_norm)
+        + "|"
+        + valor_a_texto_llave(numero_doc_norm)
+    )
+
+
+def normalizar_flag_binaria(x: Any) -> int:
+    if pd.isna(x):
+        return 0
+
+    if isinstance(x, (bool, np.bool_)):
+        return int(x)
+
+    if isinstance(x, (int, float, np.integer, np.floating)):
+        if pd.isna(x):
+            return 0
+        return int(float(x) != 0)
+
+    x = str(x).strip().lower()
+
+    if x in {"", "nan", "none", "<na>", "null"}:
+        return 0
+
+    if x in {"1", "true", "verdadero", "si", "sí", "yes", "y", "x"}:
+        return 1
+
+    if x in {"0", "false", "falso", "no", "n"}:
+        return 0
+
+    return 0
+
 
 def normalizar_lista_cuentas(df_asiento: pd.DataFrame) -> tuple:
     cuentas = []

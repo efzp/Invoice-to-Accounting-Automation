@@ -11,7 +11,7 @@ from procesamiento_facturas_contabilidad_match import procesar_facturas, cargar_
 from funciones_de_limpieza_base_datos_factura import limpiar_espacios
 
 
-# =========================================================
+# ========================================================Pu
 # PREDICTOR
 # =========================================================
 
@@ -41,8 +41,8 @@ col_prediccion = "plantilla_predicha"
 col_total = "payable_amount"
 min_observaciones = 2
 
-threshold_alta = 0.80
-threshold_media = 0.60
+threshold_alta = 0.70
+threshold_media = 0.50
 threshold_baja = 0.30
 
 
