@@ -2,12 +2,133 @@
 
 from pathlib import Path
 import json
+import ast
 
 import numpy as np
 import pandas as pd
 from autogluon.tabular import TabularPredictor
 
-from procesamiento_facturas_contabilidad_match import procesar_facturas, cargar_excel
+import procesamiento_facturas_contabilidad_match as pfcm
+
+
+cargar_excel = getattr(pfcm, "cargar_excel", None)
+
+
+def cargar_excel_flexible(ruta_excel: str, hoja=0) -> pd.DataFrame:
+    if callable(cargar_excel):
+        return cargar_excel(ruta_excel, hoja=hoja)
+
+    df = pd.read_excel(ruta_excel, sheet_name=hoja).copy()
+
+    normalizar_nombre_columna = getattr(pfcm, "normalizar_nombre_columna", None)
+    if callable(normalizar_nombre_columna):
+        df.columns = [normalizar_nombre_columna(c) for c in df.columns]
+    else:
+        from funciones_de_limpieza_base_datos_factura import normalizar_nombre_columna as _nnc
+        df.columns = [_nnc(c) for c in df.columns]
+
+    return df
+procesar_facturas = getattr(pfcm, "procesar_facturas", None)
+if procesar_facturas is None:
+    procesar_facturas = getattr(pfcm, "preparar_facturas", None)
+
+if procesar_facturas is None:
+    raise ImportError(
+        "No se encontró ni 'procesar_facturas' ni 'preparar_facturas' en "
+        "procesamiento_facturas_contabilidad_match.py"
+    )
+
+
+ejecutar_pipeline = getattr(pfcm, "ejecutar_pipeline", None)
+if ejecutar_pipeline is None:
+    procesar_movimientos = getattr(pfcm, "procesar_movimientos", None)
+    if procesar_movimientos is None:
+        procesar_movimientos = getattr(pfcm, "preparar_movimientos", None)
+
+    filtrar_movimientos_fc = getattr(pfcm, "filtrar_movimientos_fc", None)
+    agrupar_asientos_fc = getattr(pfcm, "agrupar_asientos_fc", None)
+    generar_candidatos_match = getattr(pfcm, "generar_candidatos_match", None)
+    resolver_match = getattr(pfcm, "resolver_match", None)
+    construir_dataset_modelo = getattr(pfcm, "construir_dataset_modelo", None)
+    construir_dataset_autogluon = getattr(pfcm, "construir_dataset_autogluon", None)
+    construir_lineas_historicas_valores = getattr(pfcm, "construir_lineas_historicas_valores", None)
+    construir_perfil_ratios_valores = getattr(pfcm, "construir_perfil_ratios_valores", None)
+    construir_resumen_calidad = getattr(pfcm, "construir_resumen_calidad", None)
+
+    componentes_requeridos = [
+        procesar_movimientos,
+        filtrar_movimientos_fc,
+        agrupar_asientos_fc,
+        generar_candidatos_match,
+        resolver_match,
+        construir_dataset_modelo,
+        construir_dataset_autogluon,
+        construir_lineas_historicas_valores,
+        construir_perfil_ratios_valores,
+        construir_resumen_calidad,
+    ]
+
+    if any(x is None for x in componentes_requeridos):
+        raise ImportError(
+            "No se encontró 'ejecutar_pipeline' y tampoco están todos los componentes "
+            "necesarios para reconstruirlo en procesamiento_facturas_contabilidad_match.py"
+        )
+
+    def ejecutar_pipeline(
+        ruta_facturas: str,
+        ruta_movimientos: str,
+        hoja_facturas=0,
+        hoja_movimientos=0,
+        empresa: str = "demo",
+        columnas_movimientos: dict | None = None,
+    ) -> dict:
+        facturas_df = procesar_facturas(ruta_facturas, hoja_facturas, empresa)
+        movimientos_df = procesar_movimientos(
+            ruta_movimientos,
+            hoja_movimientos,
+            empresa,
+            columnas_movimientos,
+        )
+        movimientos_fc_df = filtrar_movimientos_fc(movimientos_df)
+        asientos_fc_df = agrupar_asientos_fc(movimientos_fc_df)
+        candidatos_df = generar_candidatos_match(facturas_df, asientos_fc_df)
+        match_df = resolver_match(candidatos_df)
+        dataset_modelo_df = construir_dataset_modelo(
+            facturas_df,
+            match_df,
+            asientos_fc_df,
+        )
+        dataset_autogluon_df = construir_dataset_autogluon(dataset_modelo_df)
+        lineas_historicas_valores_df = construir_lineas_historicas_valores(
+            dataset_modelo_df,
+            movimientos_fc_df,
+        )
+        perfil_ratios_valores_df = construir_perfil_ratios_valores(
+            lineas_historicas_valores_df
+        )
+        resumen_calidad_df = construir_resumen_calidad(
+            facturas_df,
+            movimientos_df,
+            movimientos_fc_df,
+            asientos_fc_df,
+            candidatos_df,
+            match_df,
+            dataset_autogluon_df,
+        )
+
+        return {
+            "facturas_df": facturas_df,
+            "movimientos_df": movimientos_df,
+            "movimientos_fc_df": movimientos_fc_df,
+            "asientos_fc_df": asientos_fc_df,
+            "candidatos_df": candidatos_df,
+            "match_df": match_df,
+            "dataset_modelo_df": dataset_modelo_df,
+            "dataset_autogluon_df": dataset_autogluon_df,
+            "lineas_historicas_valores_df": lineas_historicas_valores_df,
+            "perfil_ratios_valores_df": perfil_ratios_valores_df,
+            "resumen_calidad_df": resumen_calidad_df,
+        }
 from funciones_de_limpieza_base_datos_factura import limpiar_espacios
 
 
@@ -34,6 +155,26 @@ rutas_posibles_ratios = [
 ruta_salida_lineas = carpeta_salida / "prueba_usuario_lineas_contables_sugeridas.xlsx"
 ruta_salida_control = carpeta_salida / "prueba_usuario_control_cuadre.xlsx"
 ruta_salida_plantilla = carpeta_salida / "plantilla.xlsx"
+ruta_prueba_facturacion = base / "prueba de facturacion.xlsx"
+ruta_salida_validacion = carpeta_salida / "validacion_prediccion_nit_plantilla.xlsx"
+
+columnas_movimientos_validacion = {
+    "fecha_mov": "FECHA",
+    "tipo_doc": "TIPODOC",
+    "numero_doc": "NUMDOC",
+    "cuenta": "CUENTA",
+    "nombre_cuenta": "NOM_CUENTA",
+    "identidad": "IDENTIDADTERCERO",
+    "nombre_tercero": "NOMBRETERCERO",
+    "concepto": "CONCEPTO",
+    "codigo_centro_costo": "CENTRO",
+    "centro_costo": "C_C",
+    "usuario": "CODIGO_USUARIO",
+    "numero_movil": "DOC_FUENTE",
+    "nombre_centro_costo": "NOM_CENTRO",
+    "debito": "DEBITO",
+    "credito": "CREDITO",
+}
 
 col_nit = "nit_proveedor_norm"
 col_target = "target_plantilla_cuentas"
@@ -190,7 +331,7 @@ def cargar_catalogo_cuentas() -> pd.DataFrame:
         print(f"No se encontró contabilidad para catálogo de cuentas:\n{ruta_contabilidad}")
         return pd.DataFrame(columns=["CUENTA", "NOMBRE"])
 
-    df = cargar_excel(str(ruta_contabilidad), hoja=0)
+    df = cargar_excel_flexible(str(ruta_contabilidad), hoja=0)
 
     col_cuenta = "cuenta" if "cuenta" in df.columns else None
     col_nombre = next((c for c in ["nom_cuenta", "nombre_cuenta", "nombre"] if c in df.columns), None)
@@ -669,6 +810,286 @@ def exportar_archivo_plantilla(
     return plantilla, sin_sugerencia
 
 
+def serializar_plantilla_cuentas(valor) -> str:
+    if pd.isna(valor):
+        return ""
+
+    if isinstance(valor, str):
+        texto = valor.strip()
+        if texto == "":
+            return ""
+        try:
+            valor = ast.literal_eval(texto)
+        except Exception:
+            return texto
+
+    if isinstance(valor, (tuple, list, set)):
+        partes = []
+        for x in valor:
+            x = "" if pd.isna(x) else str(x).strip()
+            if x != "":
+                partes.append(x)
+        return " | ".join(sorted(partes))
+
+    texto = str(valor).strip()
+    return texto
+
+
+def construir_resumen_plantilla_predicha(
+    lineas_sugeridas: pd.DataFrame,
+) -> pd.DataFrame:
+    columnas = [
+        "id_factura",
+        "nombre_proveedor_predicho",
+        "nit_predicho_norm",
+        "plantilla_cuentas_dc_predicha",
+        "n_lineas_predichas",
+    ]
+
+    if lineas_sugeridas.empty:
+        return pd.DataFrame(columns=columnas)
+
+    base = lineas_sugeridas.loc[
+        lineas_sugeridas.get(
+            "tiene_ratio_historico",
+            pd.Series(False, index=lineas_sugeridas.index),
+        ).fillna(False)
+    ].copy()
+
+    if base.empty:
+        return pd.DataFrame(columns=columnas)
+
+    resumen = (
+        base.groupby("id_factura", dropna=False)
+        .agg(
+            nombre_proveedor_predicho=("nombre_proveedor", lambda s: next(
+                (
+                    str(x).strip()
+                    for x in s
+                    if pd.notna(x) and str(x).strip() != ""
+                ),
+                "",
+            )),
+            nit_predicho_norm=(col_nit, lambda s: next(
+                (
+                    str(x).strip()
+                    for x in s
+                    if pd.notna(x) and str(x).strip() != ""
+                ),
+                "",
+            )),
+            plantilla_cuentas_dc_predicha=(
+                "cuenta_naturaleza",
+                lambda s: serializar_plantilla_cuentas(tuple(sorted(
+                    str(x).strip()
+                    for x in s
+                    if pd.notna(x) and str(x).strip() != ""
+                ))),
+            ),
+            n_lineas_predichas=("cuenta_naturaleza", "count"),
+        )
+        .reset_index()
+    )
+
+    return resumen[columnas].copy()
+
+
+def construir_validacion_prediccion(
+    ruta_facturas: Path,
+    ruta_movimientos_reales: Path,
+    lineas_sugeridas: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    columnas_detalle = [
+        "id_factura",
+        "llave_factura",
+        "llave_asiento",
+        "estado_match",
+        "nombre_tercero_real",
+        "nit_real_norm",
+        "plantilla_cuentas_dc_real",
+        "nombre_proveedor_predicho",
+        "nit_predicho_norm",
+        "plantilla_cuentas_dc_predicha",
+        "acierto_nit",
+        "acierto_plantilla",
+        "acierto_llave_nit_plantilla",
+        "tiene_plantilla_predicha",
+        "n_lineas_predichas",
+    ]
+
+    if not ruta_movimientos_reales.exists():
+        detalle_vacio = pd.DataFrame(columns=columnas_detalle)
+        resumen_vacio = pd.DataFrame(
+            [{"indicador": "validacion_ejecutada", "valor": "NO_ARCHIVO_PRUEBA"}]
+        )
+        return detalle_vacio, resumen_vacio
+
+    resultados_validacion = ejecutar_pipeline(
+        ruta_facturas=str(ruta_facturas),
+        ruta_movimientos=str(ruta_movimientos_reales),
+        hoja_facturas=0,
+        hoja_movimientos=0,
+        empresa="cpabaas",
+        columnas_movimientos=columnas_movimientos_validacion,
+    )
+
+    match_df = resultados_validacion["match_df"].copy()
+    asientos_fc_df = resultados_validacion["asientos_fc_df"].copy()
+    movimientos_fc_df = resultados_validacion["movimientos_fc_df"].copy()
+
+    estados_ok = ["OK_UNICO", "OK_TEXTO", "OK_VALOR"]
+
+    detalle_real = match_df.loc[
+        match_df["estado_match"].isin(estados_ok)
+        & match_df["llave_asiento"].notna(),
+        ["id_factura", "llave_factura", "llave_asiento", "estado_match"],
+    ].copy()
+
+    if detalle_real.empty:
+        detalle_vacio = pd.DataFrame(columns=columnas_detalle)
+        resumen_vacio = pd.DataFrame(
+            [{"indicador": "validacion_ejecutada", "valor": "SIN_MATCHES_OK"}]
+        )
+        return detalle_vacio, resumen_vacio
+
+    asientos_reales = asientos_fc_df[
+        ["llave_asiento", "nit_dominante_norm", "plantilla_cuentas_dc"]
+    ].copy()
+
+    terceros_reales = (
+        movimientos_fc_df.groupby("llave_asiento_base", dropna=False)["nombre_tercero"]
+        .agg(
+            lambda s: next(
+                (
+                    str(x).strip()
+                    for x in s
+                    if pd.notna(x) and str(x).strip() != ""
+                ),
+                "",
+            )
+        )
+        .reset_index()
+        .rename(
+            columns={
+                "llave_asiento_base": "llave_asiento",
+                "nombre_tercero": "nombre_tercero_real",
+            }
+        )
+    )
+
+    detalle_real = detalle_real.merge(
+        asientos_reales,
+        on="llave_asiento",
+        how="left",
+    ).merge(
+        terceros_reales,
+        on="llave_asiento",
+        how="left",
+    )
+
+    detalle_real = detalle_real.rename(
+        columns={
+            "nit_dominante_norm": "nit_real_norm",
+            "plantilla_cuentas_dc": "plantilla_cuentas_dc_real",
+        }
+    )
+
+    detalle_real["nombre_tercero_real"] = (
+        detalle_real["nombre_tercero_real"].astype("string").fillna("").str.strip()
+    )
+    detalle_real["nit_real_norm"] = (
+        detalle_real["nit_real_norm"].astype("string").fillna("").str.strip()
+    )
+    detalle_real["plantilla_cuentas_dc_real"] = detalle_real[
+        "plantilla_cuentas_dc_real"
+    ].apply(serializar_plantilla_cuentas)
+
+    plantilla_predicha = construir_resumen_plantilla_predicha(lineas_sugeridas)
+
+    detalle = detalle_real.merge(
+        plantilla_predicha,
+        on="id_factura",
+        how="left",
+    )
+
+    detalle["nombre_proveedor_predicho"] = (
+        detalle["nombre_proveedor_predicho"].astype("string").fillna("").str.strip()
+    )
+    detalle["nit_predicho_norm"] = (
+        detalle["nit_predicho_norm"].astype("string").fillna("").str.strip()
+    )
+    detalle["plantilla_cuentas_dc_predicha"] = (
+        detalle["plantilla_cuentas_dc_predicha"].astype("string").fillna("").str.strip()
+    )
+    detalle["n_lineas_predichas"] = (
+        pd.to_numeric(detalle["n_lineas_predichas"], errors="coerce").fillna(0).astype(int)
+    )
+
+    detalle["tiene_plantilla_predicha"] = (
+        detalle["plantilla_cuentas_dc_predicha"].astype("string").str.strip().ne("")
+    )
+    detalle["acierto_nit"] = detalle["nit_real_norm"] == detalle["nit_predicho_norm"]
+    detalle["acierto_plantilla"] = (
+        detalle["plantilla_cuentas_dc_real"]
+        == detalle["plantilla_cuentas_dc_predicha"]
+    )
+    detalle["acierto_llave_nit_plantilla"] = (
+        detalle["acierto_nit"] & detalle["acierto_plantilla"]
+    )
+
+    total = len(detalle)
+    aciertos_nit = int(detalle["acierto_nit"].sum())
+    aciertos_plantilla = int(detalle["acierto_plantilla"].sum())
+    aciertos_llave = int(detalle["acierto_llave_nit_plantilla"].sum())
+    con_plantilla = int(detalle["tiene_plantilla_predicha"].sum())
+
+    resumen = pd.DataFrame(
+        [
+            {"indicador": "validacion_ejecutada", "valor": "SI"},
+            {"indicador": "asientos_validados", "valor": total},
+            {"indicador": "asientos_con_plantilla_predicha", "valor": con_plantilla},
+            {"indicador": "aciertos_nit", "valor": aciertos_nit},
+            {"indicador": "aciertos_plantilla", "valor": aciertos_plantilla},
+            {"indicador": "aciertos_llave_nit_plantilla", "valor": aciertos_llave},
+            {
+                "indicador": "pct_acierto_nit",
+                "valor": round(aciertos_nit / total, 4) if total else np.nan,
+            },
+            {
+                "indicador": "pct_acierto_plantilla",
+                "valor": round(aciertos_plantilla / total, 4) if total else np.nan,
+            },
+            {
+                "indicador": "pct_acierto_llave_nit_plantilla",
+                "valor": round(aciertos_llave / total, 4) if total else np.nan,
+            },
+        ]
+    )
+
+    detalle = detalle[columnas_detalle].copy()
+
+    return detalle, resumen
+
+
+def exportar_validacion_prediccion(
+    ruta_facturas: Path,
+    ruta_movimientos_reales: Path,
+    lineas_sugeridas: pd.DataFrame,
+    ruta_salida: Path,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    detalle, resumen = construir_validacion_prediccion(
+        ruta_facturas=ruta_facturas,
+        ruta_movimientos_reales=ruta_movimientos_reales,
+        lineas_sugeridas=lineas_sugeridas,
+    )
+
+    with pd.ExcelWriter(ruta_salida, engine="openpyxl") as writer:
+        detalle.to_excel(writer, sheet_name="detalle_validacion", index=False)
+        resumen.to_excel(writer, sheet_name="resumen_validacion", index=False)
+
+    return detalle, resumen
+
+
 # =========================================================
 # EJECUCIÓN
 # =========================================================
@@ -687,7 +1108,27 @@ print(ruta_modelo)
 
 predictor = TabularPredictor.load(str(ruta_modelo))
 
-facturas_nuevas = procesar_facturas(
+def ejecutar_procesamiento_facturas(funcion, ruta_excel: str, hoja=0, empresa="cpabaas") -> pd.DataFrame:
+    intentos = [
+        {"ruta_excel": ruta_excel, "hoja": hoja, "empresa": empresa},
+        {"archivo_excel": ruta_excel, "hoja": hoja, "empresa": empresa},
+        {"ruta": ruta_excel, "hoja": hoja, "empresa": empresa},
+    ]
+
+    for kwargs in intentos:
+        try:
+            return funcion(**kwargs)
+        except TypeError:
+            pass
+
+    try:
+        return funcion(ruta_excel, hoja, empresa)
+    except TypeError:
+        return funcion(ruta_excel, hoja)
+
+
+facturas_nuevas = ejecutar_procesamiento_facturas(
+    funcion=procesar_facturas,
     ruta_excel=str(ruta_facturas_nuevas),
     hoja=0,
     empresa="cpabaas",
@@ -764,6 +1205,35 @@ print("Líneas hoja sin_sugerencia:", len(sin_sugerencia_df))
 
 
 # =========================================================
+# VALIDACIÓN CONTRA PRUEBA DE FACTURACIÓN
+# =========================================================
+
+detalle_validacion_df, resumen_validacion_df = exportar_validacion_prediccion(
+    ruta_facturas=ruta_facturas_nuevas,
+    ruta_movimientos_reales=ruta_prueba_facturacion,
+    lineas_sugeridas=lineas_sugeridas,
+    ruta_salida=ruta_salida_validacion,
+)
+
+if not resumen_validacion_df.empty:
+    print("\nValidación de predicción:")
+    print(resumen_validacion_df)
+
+if not detalle_validacion_df.empty:
+    print("\nDetalle validación exportado en:")
+    print(ruta_salida_validacion)
+    pct_llave = resumen_validacion_df.loc[
+        resumen_validacion_df["indicador"] == "pct_acierto_llave_nit_plantilla",
+        "valor",
+    ]
+    if not pct_llave.empty:
+        print(
+            "% acierto llave nit+plantilla:",
+            f"{float(pct_llave.iloc[0]) * 100:.2f}%",
+        )
+
+
+# =========================================================
 # RESUMEN FINAL
 # =========================================================
 
@@ -774,6 +1244,7 @@ print("Facturas procesadas:", len(facturas_predichas))
 print("Facturas con predicción:", int(facturas_predichas["generar_prediccion"].sum()))
 print("Facturas sin predicción:", int((~facturas_predichas["generar_prediccion"]).sum()))
 print("Archivo plantilla:", ruta_salida_plantilla)
+print("Archivo validación:", ruta_salida_validacion)
 
 if not lineas_sugeridas.empty:
     print("Archivo de líneas:", ruta_salida_lineas)
