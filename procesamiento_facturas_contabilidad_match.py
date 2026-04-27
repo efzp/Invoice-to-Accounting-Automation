@@ -2,11 +2,13 @@
 
 import numpy as np
 import pandas as pd
+from pathlib import Path
 
 from funciones_de_limpieza_base_datos_factura import (
     asegurar_columnas,
     coalesce_alfa_num,
     coalesce_fecha,
+    construir_base_descripciones_xml,
     construir_descripcion_modelo,
     construir_llave_asiento,
     construir_llave_factura,
@@ -49,36 +51,20 @@ COLUMNAS_FACTURAS = [
 ]
 
 COLUMNAS_MODELO_AUTOG = [
-    "nit_proveedor_norm",
-    "ciudad_proveedor_modelo",
-    "tax_level_proveedor_limpio",
-    "tax_scheme_id_limpio",
-    "tax_scheme_nombre_limpio",
-    "codigo_industria_proveedor_limpio",
-    "descripcion_item_1_modelo",
-    "cantidad_lineas_xml",
-    "line_extension_amount",
-    "tax_exclusive_amount",
-    "tax_inclusive_amount",
-    "payable_amount",
-    "iva_total",
-    "inc_total",
-    "descuento_total",
-    "recargo_total",
-    "cantidad_items_total",
-    "n_registros_sugeridos",
-    "valor_base_sugerido",
-    "valor_iva_sugerido",
-    "valor_inc_sugerido",
-    "valor_cxp_sugerido",
-    "tiene_iva",
-    "tiene_inc",
-    "flag_descuento",
-    "flag_recargo",
-    "flag_umbral_rf_servicios",
-    "flag_umbral_reteica_bogota_servicios",
+    "nit_proveedor_norm", "ciudad_proveedor_modelo",
+    "tax_level_proveedor_limpio", "tax_scheme_id_limpio",
+    "tax_scheme_nombre_limpio", "codigo_industria_proveedor_limpio",
+    "descripcion_item_1_modelo", "cantidad_lineas_xml",
+    "line_extension_amount", "tax_exclusive_amount",
+    "tax_inclusive_amount", "payable_amount", "iva_total", "inc_total",
+    "descuento_total", "recargo_total", "cantidad_items_total",
+    "n_registros_sugeridos", "valor_base_sugerido",
+    "valor_iva_sugerido", "valor_inc_sugerido", "valor_cxp_sugerido",
+    "tiene_iva", "tiene_inc", "flag_descuento", "flag_recargo",
+    "flag_umbral_rf_servicios", "flag_umbral_reteica_bogota_servicios",
     "flag_umbral_reteica_bogota_compras",
     "flag_diferencia_payable_tax_inclusive",
+    "standard_item_identification_limpio", "descripciones_lineas_limpia_modelo",
     "target_plantilla_cuentas",
 ]
 
@@ -108,6 +94,41 @@ def extraer_primer_codigo_industria(valor):
     if not partes:
         return None
     return partes[0]
+
+
+def resolver_carpeta_xml_facturas(
+    ruta_excel: str,
+    ruta_xml_descripciones: str | Path | None = None,
+) -> Path | None:
+    if ruta_xml_descripciones is not None:
+        ruta = Path(ruta_xml_descripciones)
+        return ruta if ruta.exists() else None
+
+    ruta = Path(ruta_excel).parent / "XML definitivos"
+    return ruta if ruta.exists() else None
+
+
+def agregar_descripciones_xml_por_cufe(
+    facturas_df: pd.DataFrame,
+    carpeta_xml: str | Path | None,
+) -> pd.DataFrame:
+    if carpeta_xml is None:
+        return facturas_df
+
+    xml_df = construir_base_descripciones_xml(carpeta_xml, incluir_original=False)
+    if xml_df.empty:
+        return facturas_df
+
+    xml_df = xml_df.copy()
+    xml_df["cufe_norm"] = xml_df["cufe"].apply(normalizar_alfanumerico)
+    xml_df = xml_df.drop(columns=["cufe"]).drop_duplicates("cufe_norm")
+
+    return facturas_df.merge(
+        xml_df,
+        on="cufe_norm",
+        how="left",
+        suffixes=("", "_xml"),
+    )
 
 
 def score_match(fila: pd.Series) -> tuple[float, str]:
@@ -173,6 +194,7 @@ def procesar_facturas(
     ruta_excel: str,
     hoja=0,
     empresa: str = "demo",
+    ruta_xml_descripciones: str | Path | None = None,
 ) -> pd.DataFrame:
     df = cargar_excel(ruta_excel, hoja=hoja)
     df = asegurar_columnas(df, COLUMNAS_FACTURAS)
@@ -201,6 +223,20 @@ def procesar_facturas(
 
     for col in ["id_factura", "factura_completa", "cufe"]:
         df[f"{col}_norm"] = df[col].apply(normalizar_alfanumerico)
+
+    carpeta_xml = resolver_carpeta_xml_facturas(ruta_excel, ruta_xml_descripciones)
+    df = agregar_descripciones_xml_por_cufe(df, carpeta_xml)
+
+    for col in ["standard_item_identification", "descripciones_lineas_limpia"]:
+        if col not in df.columns:
+            df[col] = None
+
+    df["standard_item_identification_limpio"] = df[
+        "standard_item_identification"
+    ].apply(normalizar_texto_basico)
+    df["descripciones_lineas_limpia_modelo"] = df[
+        "descripciones_lineas_limpia"
+    ].apply(normalizar_texto_modelo)
 
     df["nit_proveedor_limpio"] = df["nit_proveedor"].apply(
         normalizar_texto_basico
@@ -901,8 +937,14 @@ def ejecutar_pipeline(
     hoja_movimientos=0,
     empresa: str = "demo",
     columnas_movimientos: dict | None = None,
+    ruta_xml_descripciones: str | Path | None = None,
 ) -> dict:
-    facturas_df = procesar_facturas(ruta_facturas, hoja_facturas, empresa)
+    facturas_df = procesar_facturas(
+        ruta_facturas,
+        hoja_facturas,
+        empresa,
+        ruta_xml_descripciones,
+    )
     movimientos_df = procesar_movimientos(
         ruta_movimientos,
         hoja_movimientos,

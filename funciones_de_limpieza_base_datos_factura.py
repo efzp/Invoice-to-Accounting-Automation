@@ -1,9 +1,21 @@
 import re
 import unicodedata
+import xml.etree.ElementTree as ET
+from pathlib import Path
 from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
+
+
+NS_XML_FACTURA = {
+    "cac": "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2",
+    "cbc": "urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2",
+}
+
+UMBRAL_TOKEN_MUY_COMUN_XML = 0.35
+MIN_FACTURAS_TOKEN_XML = 2
+MIN_LARGO_TOKEN_XML = 3
 
 
 def es_nulo(x: Any) -> bool:
@@ -73,6 +85,189 @@ def normalizar_nit(x: Any) -> Optional[str]:
     x = str(x)
     x = re.sub(r"[^0-9]", "", x)
     return x if x else None
+
+
+def cargar_spacy_es():
+    try:
+        import spacy
+    except ImportError as exc:
+        raise ImportError(
+            "Falta instalar spaCy. Ejecuta: python -m pip install spacy"
+        ) from exc
+
+    try:
+        return spacy.load("es_core_news_sm")
+    except OSError:
+        return spacy.blank("es")
+
+
+def texto_xml(elemento) -> str:
+    if elemento is None:
+        return ""
+    return " ".join(" ".join(elemento.itertext()).split())
+
+
+def es_token_numerico_spacy(token) -> bool:
+    texto = token.text.strip()
+    return token.like_num or bool(re.fullmatch(r"[\d.,/%\-]+", texto))
+
+
+def tokenizar_descripcion_xml(
+    texto: str,
+    nlp,
+    min_largo_token: int = MIN_LARGO_TOKEN_XML,
+) -> list[str]:
+    doc = nlp(str(texto).lower())
+    tokens = []
+
+    for token in doc:
+        valor = token.lemma_ if token.lemma_ else token.text
+        valor = valor.strip().lower()
+
+        if (
+            not valor
+            or token.is_stop
+            or token.is_punct
+            or token.is_space
+            or es_token_numerico_spacy(token)
+            or len(valor) < min_largo_token
+        ):
+            continue
+
+        tokens.append(valor)
+
+    return tokens
+
+
+def filtrar_tokens_xml_por_frecuencia(
+    filas: list[dict],
+    umbral_token_muy_comun: float = UMBRAL_TOKEN_MUY_COMUN_XML,
+    min_facturas_token: int = MIN_FACTURAS_TOKEN_XML,
+) -> list[dict]:
+    total_facturas = len(filas)
+    frecuencia_documental = {}
+
+    for fila in filas:
+        for token in set(fila["tokens_descripcion"]):
+            frecuencia_documental[token] = frecuencia_documental.get(token, 0) + 1
+
+    max_facturas_token = max(1, int(total_facturas * umbral_token_muy_comun))
+
+    for fila in filas:
+        tokens = [
+            token
+            for token in fila["tokens_descripcion"]
+            if min_facturas_token <= frecuencia_documental[token] <= max_facturas_token
+        ]
+        fila["descripciones_lineas_limpia"] = " ".join(tokens)
+        del fila["tokens_descripcion"]
+
+    return filas
+
+
+def llave_orden_codigo_xml(codigo: str):
+    partes = re.split(r"(\d+)", str(codigo))
+    return [int(x) if x.isdigit() else x.lower() for x in partes]
+
+
+def ordenar_lineas_xml(lineas: list[dict]) -> list[dict]:
+    return sorted(
+        lineas,
+        key=lambda x: (
+            x["codigo"] == "",
+            llave_orden_codigo_xml(x["codigo"]),
+            x["descripcion"],
+        ),
+    )
+
+
+def extraer_lineas_xml_factura(root: ET.Element) -> list[dict]:
+    lineas = root.findall(".//cac:InvoiceLine", NS_XML_FACTURA) + root.findall(
+        ".//cac:CreditNoteLine",
+        NS_XML_FACTURA,
+    )
+    datos = []
+
+    for linea in lineas:
+        textos = [
+            texto_xml(x)
+            for x in linea.findall("./cac:Item/cbc:Description", NS_XML_FACTURA)
+        ]
+
+        if not any(textos):
+            textos = [texto_xml(linea.find("./cac:Item/cbc:Name", NS_XML_FACTURA))]
+
+        textos = [x for x in textos if x]
+        if textos:
+            datos.append(
+                {
+                    "codigo": texto_xml(
+                        linea.find(
+                            "./cac:Item/cac:StandardItemIdentification/cbc:ID",
+                            NS_XML_FACTURA,
+                        )
+                    ),
+                    "descripcion": " / ".join(textos),
+                }
+            )
+
+    return ordenar_lineas_xml(datos)
+
+
+def concatenar_unicos(valores: list[str]) -> str:
+    return " | ".join(dict.fromkeys(x for x in valores if x))
+
+
+def extraer_cufe_xml(root: ET.Element) -> str:
+    return texto_xml(root.find("./cbc:UUID", NS_XML_FACTURA))
+
+
+def construir_base_descripciones_xml(
+    carpeta_xml: str | Path,
+    incluir_original: bool = False,
+    umbral_token_muy_comun: float = UMBRAL_TOKEN_MUY_COMUN_XML,
+    min_facturas_token: int = MIN_FACTURAS_TOKEN_XML,
+    min_largo_token: int = MIN_LARGO_TOKEN_XML,
+) -> pd.DataFrame:
+    carpeta_xml = Path(carpeta_xml)
+    nlp = cargar_spacy_es()
+    filas = []
+
+    for ruta_xml in sorted(carpeta_xml.glob("*.xml")):
+        root = ET.parse(ruta_xml).getroot()
+        lineas = extraer_lineas_xml_factura(root)
+        descripcion_original = concatenar_unicos([x["descripcion"] for x in lineas])
+        fila = {
+            "cufe": extraer_cufe_xml(root),
+            "standard_item_identification": concatenar_unicos([x["codigo"] for x in lineas]),
+            "tokens_descripcion": tokenizar_descripcion_xml(
+                descripcion_original,
+                nlp,
+                min_largo_token=min_largo_token,
+            ),
+        }
+        if incluir_original:
+            fila["descripciones_lineas_original"] = descripcion_original
+        filas.append(fila)
+
+    df = pd.DataFrame(
+        filtrar_tokens_xml_por_frecuencia(
+            filas,
+            umbral_token_muy_comun=umbral_token_muy_comun,
+            min_facturas_token=min_facturas_token,
+        )
+    )
+    if df.empty:
+        return pd.DataFrame(
+            columns=[
+                "cufe",
+                "standard_item_identification",
+                "descripciones_lineas_limpia",
+            ]
+        )
+
+    df = df[df["cufe"].astype(str).str.strip().ne("")]
+    return df.drop_duplicates(subset="cufe", keep="first").reset_index(drop=True)
 
 
 def safe_to_numeric(serie: pd.Series) -> pd.Series:
