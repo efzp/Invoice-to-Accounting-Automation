@@ -25,6 +25,10 @@ carpeta_modelo.mkdir(parents=True, exist_ok=True)
 
 target = "target_plantilla_cuentas"
 min_observaciones_por_clase = 3
+aplicar_oversampling_reciente = True
+columna_fecha_oversampling = "fecha_emision"
+meses_recientes_oversampling = 3
+factor_oversampling_reciente = 2
 
 columnas_excluir = [
     "llave_factura",
@@ -41,7 +45,14 @@ columnas_remover_del_modelo = [
     "empresa",
     "nombre_proveedor_modelo",
     "item1_proveedor_modelo",
+    "descripcion_item_1_modelo",
     "descripcion_modelo_norm",
+    "cantidad_lineas_xml",
+    "n_registros_sugeridos",
+    "iva_total",
+    "inc_total",
+    "valor_iva_sugerido",
+    "valor_inc_sugerido",
     "prefijo_factura",
     "anio",
     "mes",
@@ -120,6 +131,68 @@ def resumen_dataset(df_modelo: pd.DataFrame, df_entrenable: pd.DataFrame) -> pd.
         {"indicador": "clases_originales", "valor": df_modelo[target].nunique()},
         {"indicador": "clases_entrenables", "valor": df_entrenable[target].nunique()},
     ])
+
+
+def aplicar_oversampling_por_recencia(
+    df: pd.DataFrame,
+    columna_fecha: str,
+    meses_recientes: int,
+    factor: int,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if factor <= 1 or columna_fecha not in df.columns:
+        resumen = pd.DataFrame([{
+            "oversampling_activo": False,
+            "motivo": "sin_columna_fecha_o_factor_1",
+            "filas_antes": len(df),
+            "filas_recientes": 0,
+            "filas_despues": len(df),
+        }])
+        return df.copy(), resumen
+
+    salida = df.copy()
+    fechas = pd.to_datetime(salida[columna_fecha], errors="coerce")
+
+    if fechas.notna().sum() == 0:
+        resumen = pd.DataFrame([{
+            "oversampling_activo": False,
+            "motivo": "fechas_invalidas",
+            "filas_antes": len(df),
+            "filas_recientes": 0,
+            "filas_despues": len(df),
+        }])
+        return salida, resumen
+
+    fecha_corte = fechas.max() - pd.DateOffset(months=meses_recientes)
+    mask_reciente = fechas >= fecha_corte
+    recientes = salida.loc[mask_reciente].copy()
+
+    if recientes.empty:
+        resumen = pd.DataFrame([{
+            "oversampling_activo": False,
+            "motivo": "sin_filas_recientes",
+            "fecha_maxima": str(fechas.max().date()),
+            "fecha_corte": str(fecha_corte.date()),
+            "filas_antes": len(df),
+            "filas_recientes": 0,
+            "filas_despues": len(df),
+        }])
+        return salida, resumen
+
+    replicas = [salida] + [recientes.copy() for _ in range(factor - 1)]
+    salida = pd.concat(replicas, ignore_index=True)
+
+    resumen = pd.DataFrame([{
+        "oversampling_activo": True,
+        "motivo": "ok",
+        "fecha_maxima": str(fechas.max().date()),
+        "fecha_corte": str(fecha_corte.date()),
+        "meses_recientes": meses_recientes,
+        "factor": factor,
+        "filas_antes": len(df),
+        "filas_recientes": len(recientes),
+        "filas_despues": len(salida),
+    }])
+    return salida, resumen
 
 
 def resumen_categoricas(df: pd.DataFrame, columnas: list[str]) -> pd.DataFrame:
@@ -205,6 +278,27 @@ if df_entrenable.empty:
 if df_entrenable[target].nunique() < 2:
     raise ValueError("Solo quedó una clase entrenable.")
 
+resumen_oversampling = pd.DataFrame([{
+    "oversampling_activo": False,
+    "motivo": "desactivado",
+    "filas_antes": len(df_entrenable),
+    "filas_recientes": 0,
+    "filas_despues": len(df_entrenable),
+}])
+
+if aplicar_oversampling_reciente:
+    df_entrenable, resumen_oversampling = aplicar_oversampling_por_recencia(
+        df_entrenable,
+        columna_fecha=columna_fecha_oversampling,
+        meses_recientes=meses_recientes_oversampling,
+        factor=factor_oversampling_reciente,
+    )
+
+df_entrenable = df_entrenable.drop(
+    columns=[columna_fecha_oversampling],
+    errors="ignore",
+)
+
 columnas_modelo = [c for c in df_entrenable.columns if c != target]
 
 imprimir_tabla(
@@ -221,6 +315,8 @@ imprimir_tabla(
     "VARIABLE OBJETIVO",
     pd.DataFrame([{"target": target}])
 )
+
+imprimir_tabla("OVERSAMPLING RECIENTE", resumen_oversampling)
 
 imprimir_tabla(
     "VARIABLES PREDICTORAS",
@@ -326,6 +422,7 @@ resumen_entrenamiento = {
     "target": target,
     "filas_modelo_original": int(len(df_modelo)),
     "filas_entrenables": int(len(df_entrenable)),
+    "oversampling_reciente": resumen_oversampling.iloc[0].to_dict(),
     "clases_originales": int(df_modelo[target].nunique()),
     "clases_entrenables": int(df_entrenable[target].nunique()),
     "min_observaciones_por_clase": int(min_observaciones_por_clase),

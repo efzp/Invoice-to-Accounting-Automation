@@ -34,6 +34,16 @@ UVT_2026 = 52374
 UMBRAL_RF_SERVICIOS = 2 * UVT_2026
 UMBRAL_RETEICA_BOGOTA_SERVICIOS = 4 * UVT_2026
 UMBRAL_RETEICA_BOGOTA_COMPRAS = 27 * UVT_2026
+TARGET_MODELO = "target_plantilla_cuentas"
+UMBRAL_DOMINANCIA_VARIABLE = 0.98
+UMBRAL_NULOS_VARIABLE = 0.95
+UMBRAL_ALTA_CARDINALIDAD = 0.80
+MAX_COLUMNAS_ENCODING = 60
+
+COLUMNAS_FUGA_TARGET = [
+    "plantilla_cuentas", "plantilla_cuentas_dc", "cuenta_naturaleza",
+    "concepto_concat", "llave_factura", "llave_asiento",
+]
 
 COLUMNAS_FACTURAS = [
     "id_carga", "id_factura", "cufe", "factura_completa",
@@ -51,19 +61,14 @@ COLUMNAS_FACTURAS = [
 ]
 
 COLUMNAS_MODELO_AUTOG = [
-    "nit_proveedor_norm", "ciudad_proveedor_modelo",
-    "tax_level_proveedor_limpio", "tax_scheme_id_limpio",
-    "tax_scheme_nombre_limpio", "codigo_industria_proveedor_limpio",
-    "descripcion_item_1_modelo", "cantidad_lineas_xml",
+    "nit_proveedor_norm", "ciudad_proveedor_modelo", "tax_level_proveedor_limpio",
+    "tax_scheme_id_limpio", "tax_scheme_nombre_limpio", "codigo_industria_proveedor_limpio",
+    "fecha_emision",
     "line_extension_amount", "tax_exclusive_amount",
-    "tax_inclusive_amount", "payable_amount", "iva_total", "inc_total",
-    "descuento_total", "recargo_total", "cantidad_items_total",
-    "n_registros_sugeridos", "valor_base_sugerido",
-    "valor_iva_sugerido", "valor_inc_sugerido", "valor_cxp_sugerido",
-    "tiene_iva", "tiene_inc", "flag_descuento", "flag_recargo",
-    "flag_umbral_rf_servicios", "flag_umbral_reteica_bogota_servicios",
-    "flag_umbral_reteica_bogota_compras",
-    "flag_diferencia_payable_tax_inclusive",
+    "tax_inclusive_amount","payable_amount","descuento_total","recargo_total","cantidad_items_total",
+    "valor_base_sugerido", "valor_cxp_sugerido",
+    "tiene_iva","tiene_inc","flag_descuento","flag_recargo","flag_umbral_rf_servicios",
+    "flag_umbral_reteica_bogota_servicios","flag_umbral_reteica_bogota_compras","flag_diferencia_payable_tax_inclusive",
     "standard_item_identification_limpio", "descripciones_lineas_limpia_modelo",
     "target_plantilla_cuentas",
 ]
@@ -759,6 +764,116 @@ def construir_dataset_autogluon(
     ].copy()
 
 
+def auditar_variables_modelo(
+    df: pd.DataFrame,
+    target: str = TARGET_MODELO,
+    umbral_dominancia: float = UMBRAL_DOMINANCIA_VARIABLE,
+    umbral_nulos: float = UMBRAL_NULOS_VARIABLE,
+    umbral_cardinalidad: float = UMBRAL_ALTA_CARDINALIDAD,
+    columnas_fuga: list[str] | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
+    columnas_fuga = set(columnas_fuga or [])
+    filas = []
+    columnas_remover = []
+    n_filas = len(df)
+
+    for col in df.columns:
+        if col == target:
+            continue
+
+        serie = df[col]
+        nulos = int(serie.isna().sum())
+        pct_nulos = nulos / n_filas if n_filas else 0
+        unicos = int(serie.nunique(dropna=True))
+        ratio_unicos = unicos / n_filas if n_filas else 0
+        conteos = serie.value_counts(dropna=True)
+        valor_dominante = conteos.index[0] if len(conteos) else pd.NA
+        pct_dominante = float(conteos.iloc[0] / n_filas) if len(conteos) else 0
+        accion = "OK"
+        motivo = ""
+
+        if col in columnas_fuga:
+            accion = "REMOVER_FUGA_TARGET"
+            motivo = "columna_posterior_al_match_o_identificador"
+        elif unicos <= 1:
+            accion = "REMOVER_CONSTANTE"
+            motivo = "unico_valor_no_nulo"
+        elif pct_nulos >= umbral_nulos:
+            accion = "REMOVER_MUCHOS_NULOS"
+            motivo = f"pct_nulos>={umbral_nulos}"
+        elif pct_dominante >= umbral_dominancia:
+            accion = "REMOVER_CASI_CONSTANTE"
+            motivo = f"pct_dominante>={umbral_dominancia}"
+        elif ratio_unicos >= umbral_cardinalidad:
+            accion = "REVISAR_ALTA_CARDINALIDAD"
+            motivo = f"ratio_unicos>={umbral_cardinalidad}"
+
+        if accion.startswith("REMOVER"):
+            columnas_remover.append(col)
+
+        filas.append({
+            "columna": col,
+            "dtype": str(serie.dtype),
+            "nulos": nulos,
+            "pct_nulos": round(pct_nulos, 4),
+            "unicos": unicos,
+            "ratio_unicos": round(ratio_unicos, 4),
+            "valor_dominante": str(valor_dominante),
+            "pct_dominante": round(pct_dominante, 4),
+            "accion": accion,
+            "motivo": motivo,
+        })
+
+    reporte = pd.DataFrame(filas).sort_values(["accion", "columna"])
+    df_filtrado = df.drop(columns=columnas_remover, errors="ignore").copy()
+    return df_filtrado, reporte, columnas_remover
+
+
+def detectar_posibles_encoding(
+    df: pd.DataFrame,
+    target: str = TARGET_MODELO,
+    max_columnas: int = MAX_COLUMNAS_ENCODING,
+) -> pd.DataFrame:
+    candidatas = [
+        col for col in df.columns
+        if col != target and 1 < df[col].nunique(dropna=True) < len(df)
+    ][:max_columnas]
+    filas = []
+
+    for i, col_a in enumerate(candidatas):
+        for col_b in candidatas[i + 1:]:
+            par = df[[col_a, col_b]].dropna()
+            if par.empty:
+                continue
+
+            max_b_por_a = int(par.groupby(col_a)[col_b].nunique().max())
+            max_a_por_b = int(par.groupby(col_b)[col_a].nunique().max())
+            if max_b_por_a == 1 and max_a_por_b == 1:
+                filas.append({
+                    "columna_a": col_a,
+                    "columna_b": col_b,
+                    "tipo": "uno_a_uno",
+                    "filas_comparadas": len(par),
+                })
+
+    return pd.DataFrame(filas)
+
+
+def validar_dataset_autogluon(
+    dataset_autogluon_df: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    df_validado, reporte_variables, _ = auditar_variables_modelo(
+        dataset_autogluon_df,
+        target=TARGET_MODELO,
+        columnas_fuga=COLUMNAS_FUGA_TARGET,
+    )
+    reporte_encoding = detectar_posibles_encoding(
+        df_validado,
+        target=TARGET_MODELO,
+    )
+    return df_validado, reporte_variables, reporte_encoding
+
+
 def construir_lineas_historicas_valores(
     dataset_modelo_df: pd.DataFrame,
     movimientos_fc_df: pd.DataFrame,
@@ -798,6 +913,41 @@ def construir_lineas_historicas_valores(
     )
     lineas["cuenta_naturaleza"] = (
         lineas["cuenta_limpia"].astype(str) + "_" + lineas["naturaleza"]
+    )
+    columnas_grupo = [
+        c for c in [
+            "empresa_mov", "empresa", "llave_factura", "llave_asiento",
+            "nit_proveedor_norm", "total_factura", "target_plantilla_cuentas",
+            "cuenta_naturaleza",
+        ]
+        if c in lineas.columns
+    ]
+    columnas_texto = [
+        c for c in ["cuenta_limpia", "naturaleza", "nombre_cuenta"]
+        if c in lineas.columns and c not in columnas_grupo
+    ]
+    agregaciones = {
+        "valor_linea": ("valor_linea", "sum"),
+        "debito": ("debito", "sum"),
+        "credito": ("credito", "sum"),
+    }
+    for col in columnas_texto:
+        agregaciones[col] = (
+            col,
+            lambda s: next(
+                (
+                    str(x).strip()
+                    for x in s
+                    if pd.notna(x) and str(x).strip() != ""
+                ),
+                "",
+            ),
+        )
+
+    lineas = (
+        lineas.groupby(columnas_grupo, dropna=False)
+        .agg(**agregaciones)
+        .reset_index()
     )
     lineas["ratio_total"] = np.where(
         lineas["total_factura"] != 0,
@@ -961,6 +1111,11 @@ def ejecutar_pipeline(
         asientos_fc_df,
     )
     dataset_autogluon_df = construir_dataset_autogluon(dataset_modelo_df)
+    (
+        dataset_autogluon_df,
+        reporte_variables_modelo_df,
+        reporte_encoding_modelo_df,
+    ) = validar_dataset_autogluon(dataset_autogluon_df)
     lineas_historicas_valores_df = construir_lineas_historicas_valores(
         dataset_modelo_df,
         movimientos_fc_df,
@@ -987,7 +1142,10 @@ def ejecutar_pipeline(
         "match_df": match_df,
         "dataset_modelo_df": dataset_modelo_df,
         "dataset_autogluon_df": dataset_autogluon_df,
+        "reporte_variables_modelo_df": reporte_variables_modelo_df,
+        "reporte_encoding_modelo_df": reporte_encoding_modelo_df,
         "lineas_historicas_valores_df": lineas_historicas_valores_df,
         "perfil_ratios_valores_df": perfil_ratios_valores_df,
         "resumen_calidad_df": resumen_calidad_df,
     }
+

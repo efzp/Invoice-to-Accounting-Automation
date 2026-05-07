@@ -468,7 +468,7 @@ def normalizar_flag_binaria(x: Any) -> int:
 
 
 def normalizar_lista_cuentas(df_asiento: pd.DataFrame) -> tuple:
-    cuentas = []
+    cuentas = set()
 
     for _, row in df_asiento.iterrows():
         cuenta = row.get("cuenta_limpia", row.get("cuenta"))
@@ -479,13 +479,13 @@ def normalizar_lista_cuentas(df_asiento: pd.DataFrame) -> tuple:
         cuenta = str(cuenta).strip()
 
         if cuenta:
-            cuentas.append(cuenta)
+            cuentas.add(cuenta)
 
     return tuple(sorted(cuentas))
 
 
 def normalizar_lista_cuentas_dc(df_asiento: pd.DataFrame) -> tuple:
-    pares = []
+    pares = set()
 
     for _, row in df_asiento.iterrows():
         cuenta = row.get("cuenta_limpia", row.get("cuenta"))
@@ -510,7 +510,7 @@ def normalizar_lista_cuentas_dc(df_asiento: pd.DataFrame) -> tuple:
         else:
             naturaleza = "N"
 
-        pares.append(f"{cuenta}_{naturaleza}")
+        pares.add(f"{cuenta}_{naturaleza}")
 
     return tuple(sorted(pares))
 

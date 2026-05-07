@@ -56,6 +56,8 @@ tablas_resumen = {
     "Matches": "match_df",
     "Dataset modelo": "dataset_modelo_df",
     "Dataset AutoGluon": "dataset_autogluon_df",
+    "Reporte variables modelo": "reporte_variables_modelo_df",
+    "Reporte encoding modelo": "reporte_encoding_modelo_df",
     "Líneas históricas valores": "lineas_historicas_valores_df",
     "Perfil ratios valores": "perfil_ratios_valores_df",
 }
@@ -128,6 +130,8 @@ exportaciones = {
     "candidatos_match.xlsx": "candidatos_df",
     "dataset_modelo.xlsx": "dataset_modelo_df",
     "dataset_autogluon.xlsx": "dataset_autogluon_df",
+    "reporte_variables_modelo.xlsx": "reporte_variables_modelo_df",
+    "reporte_encoding_modelo.xlsx": "reporte_encoding_modelo_df",
     "lineas_historicas_valores.xlsx": "lineas_historicas_valores_df",
     "perfil_ratios_valores.xlsx": "perfil_ratios_valores_df",
 }

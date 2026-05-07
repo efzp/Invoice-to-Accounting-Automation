@@ -282,6 +282,42 @@ def separar_cuenta_naturaleza(valor):
     return texto.rsplit("_", 1)
 
 
+def deserializar_plantilla_cuentas(valor) -> list[str]:
+    if isinstance(valor, (tuple, list, set)):
+        iterable = valor
+    else:
+        try:
+            if pd.isna(valor):
+                return []
+        except Exception:
+            pass
+
+        texto = str(valor).strip()
+        if texto == "":
+            return []
+
+        try:
+            parsed = ast.literal_eval(texto)
+            if isinstance(parsed, (tuple, list, set)):
+                iterable = parsed
+            else:
+                iterable = [parsed]
+        except Exception:
+            iterable = texto.split("|") if "|" in texto else [texto]
+
+    cuentas = []
+    for cuenta in iterable:
+        try:
+            if pd.isna(cuenta):
+                continue
+        except Exception:
+            pass
+        cuenta = str(cuenta).strip()
+        if cuenta:
+            cuentas.append(cuenta)
+    return cuentas
+
+
 def preparar_X(facturas: pd.DataFrame, columnas_modelo: list[str]) -> pd.DataFrame:
     X = facturas.copy()
     for col in columnas_modelo:
@@ -355,7 +391,10 @@ def cargar_catalogo_cuentas() -> pd.DataFrame:
     )
 
 
-def construir_perfil_fallback_por_plantilla(perfil: pd.DataFrame) -> pd.DataFrame:
+def construir_perfil_fallback_por_plantilla(
+    perfil: pd.DataFrame,
+    min_obs: int = min_observaciones,
+) -> pd.DataFrame:
     if perfil.empty:
         return pd.DataFrame(columns=[col_target, "cuenta_naturaleza", "ratio_mediano", "ratio_promedio", "ratio_std", "n_observaciones", "origen_ratio"])
 
@@ -375,7 +414,9 @@ def construir_perfil_fallback_por_plantilla(perfil: pd.DataFrame) -> pd.DataFram
         .reset_index()
     )
 
-    fallback = fallback.loc[fallback["n_observaciones"] >= min_observaciones].copy()
+    if min_obs > 0:
+        fallback = fallback.loc[fallback["n_observaciones"] >= min_obs].copy()
+
     fallback["origen_ratio"] = "FALLBACK_PLANTILLA"
     return fallback
 
@@ -507,14 +548,26 @@ def construir_lineas_desde_ratios(
 
     perfil = perfil_ratios.copy()
     facturas = facturas_predichas.copy()
+    columnas_ratio = [
+        "ratio_mediano",
+        "ratio_promedio",
+        "ratio_std",
+        "n_observaciones",
+    ]
 
     faltantes = [c for c in [col_nit, col_target, "cuenta_naturaleza", "ratio_mediano"] if c not in perfil.columns]
     if faltantes:
         raise ValueError("El perfil de ratios no tiene las columnas requeridas:\n" + "\n".join(faltantes))
 
-    if "n_observaciones" in perfil.columns:
-        perfil["n_observaciones"] = numero_seguro(perfil["n_observaciones"])
-        perfil = perfil.loc[perfil["n_observaciones"] >= min_observaciones].copy()
+    for col in columnas_ratio:
+        if col not in perfil.columns:
+            perfil[col] = np.nan
+        perfil[col] = numero_seguro(perfil[col])
+
+    perfil_base = perfil.copy()
+    perfil_confiable = perfil.loc[
+        perfil["n_observaciones"] >= min_observaciones
+    ].copy()
 
     facturas[col_target] = facturas[col_prediccion]
     facturas = facturas.loc[
@@ -526,43 +579,89 @@ def construir_lineas_desde_ratios(
     if facturas.empty:
         return pd.DataFrame(columns=columnas_salida)
 
-    llaves_proveedor = [col_nit, col_target]
-    perfil_proveedor = texto_llave(perfil.copy(), llaves_proveedor)
-    perfil_proveedor["origen_ratio"] = "PROVEEDOR"
+    filas_plantilla = []
+    for _, factura in facturas.iterrows():
+        for orden, cuenta_naturaleza in enumerate(
+            deserializar_plantilla_cuentas(factura.get(col_target))
+        ):
+            fila = factura.to_dict()
+            fila["cuenta_naturaleza"] = cuenta_naturaleza
+            fila["orden_cuenta_predicha"] = orden
+            filas_plantilla.append(fila)
 
-    facturas_base = texto_llave(facturas.copy(), llaves_proveedor)
-    lineas_proveedor = facturas_base.merge(perfil_proveedor, on=llaves_proveedor, how="left", suffixes=("", "_ratio"))
-
-    ids_con_proveedor = set(
-        lineas_proveedor.loc[lineas_proveedor["cuenta_naturaleza"].notna(), "id_factura"].astype("string")
-    )
-
-    lineas_proveedor_ok = lineas_proveedor.loc[lineas_proveedor["cuenta_naturaleza"].notna()].copy()
-
-    perfil_fallback = construir_perfil_fallback_por_plantilla(perfil)
-    lineas_fallback_ok = pd.DataFrame(columns=lineas_proveedor_ok.columns)
-
-    facturas_fallback = facturas.loc[~facturas["id_factura"].astype("string").isin(ids_con_proveedor)].copy()
-
-    if not facturas_fallback.empty and not perfil_fallback.empty:
-        facturas_fallback = texto_llave(facturas_fallback, [col_target])
-        perfil_fallback = texto_llave(perfil_fallback, [col_target])
-
-        lineas_fallback = facturas_fallback.merge(
-            perfil_fallback,
-            on=[col_target],
-            how="left",
-            suffixes=("", "_ratio"),
+    if filas_plantilla:
+        lineas_ok = pd.DataFrame(filas_plantilla)
+    else:
+        lineas_ok = pd.DataFrame(
+            columns=list(facturas.columns) + ["cuenta_naturaleza", "orden_cuenta_predicha"]
         )
 
-        lineas_fallback_ok = lineas_fallback.loc[lineas_fallback["cuenta_naturaleza"].notna()].copy()
+    for col in columnas_ratio:
+        lineas_ok[col] = np.nan
+    lineas_ok["origen_ratio"] = pd.NA
 
-    ids_con_ratio = ids_con_proveedor | set(lineas_fallback_ok["id_factura"].astype("string"))
-    lineas_ok = pd.concat([lineas_proveedor_ok, lineas_fallback_ok], ignore_index=True, sort=False)
+    llaves_proveedor = [col_nit, col_target]
+    llaves_proveedor_cuenta = llaves_proveedor + ["cuenta_naturaleza"]
+    llaves_plantilla_cuenta = [col_target, "cuenta_naturaleza"]
+
+    def preparar_fuente_ratios(df_fuente: pd.DataFrame, llaves: list[str]) -> pd.DataFrame:
+        if df_fuente.empty:
+            return pd.DataFrame(columns=llaves + columnas_ratio)
+
+        fuente = texto_llave(df_fuente.copy(), llaves)
+        fuente = fuente.sort_values("n_observaciones", ascending=False, na_position="last")
+        return fuente[llaves + columnas_ratio].drop_duplicates(subset=llaves, keep="first")
+
+    def completar_ratios(
+        lineas: pd.DataFrame,
+        fuente: pd.DataFrame,
+        llaves: list[str],
+        origen: str,
+    ) -> pd.DataFrame:
+        if lineas.empty or fuente.empty:
+            return lineas
+
+        base = texto_llave(lineas.copy(), llaves)
+        fuente = preparar_fuente_ratios(fuente, llaves)
+        temporal = base.merge(
+            fuente,
+            on=llaves,
+            how="left",
+            suffixes=("", "_fuente"),
+        )
+        mascara = temporal["ratio_mediano"].isna() & temporal["ratio_mediano_fuente"].notna()
+
+        for col in columnas_ratio:
+            col_fuente = f"{col}_fuente"
+            if col_fuente in temporal.columns:
+                temporal.loc[mascara, col] = temporal.loc[mascara, col_fuente]
+
+        temporal.loc[mascara, "origen_ratio"] = origen
+        return temporal.drop(
+            columns=[f"{c}_fuente" for c in columnas_ratio if f"{c}_fuente" in temporal.columns]
+        )
+
+    perfil_fallback_confiable = construir_perfil_fallback_por_plantilla(
+        perfil_confiable,
+        min_obs=min_observaciones,
+    )
+    perfil_fallback_base = construir_perfil_fallback_por_plantilla(
+        perfil_base,
+        min_obs=0,
+    )
+
+    lineas_ok = completar_ratios(lineas_ok, perfil_confiable, llaves_proveedor_cuenta, "PROVEEDOR")
+    lineas_ok = completar_ratios(lineas_ok, perfil_fallback_confiable, llaves_plantilla_cuenta, "FALLBACK_PLANTILLA")
+    lineas_ok = completar_ratios(lineas_ok, perfil_base, llaves_proveedor_cuenta, "PROVEEDOR_OBS_UNICA")
+    lineas_ok = completar_ratios(lineas_ok, perfil_fallback_base, llaves_plantilla_cuenta, "FALLBACK_PLANTILLA_OBS_UNICA")
 
     if not lineas_ok.empty:
         lineas_ok["valor_base_calculo"] = numero_seguro(lineas_ok[col_total])
+        lineas_ok["tiene_ratio_historico"] = lineas_ok["ratio_mediano"].notna()
         lineas_ok["ratio_mediano"] = numero_seguro(lineas_ok["ratio_mediano"])
+        lineas_ok["ratio_promedio"] = numero_seguro(lineas_ok["ratio_promedio"])
+        lineas_ok["ratio_std"] = numero_seguro(lineas_ok["ratio_std"])
+        lineas_ok["n_observaciones"] = numero_seguro(lineas_ok["n_observaciones"])
         lineas_ok["valor_sugerido"] = lineas_ok["valor_base_calculo"] * lineas_ok["ratio_mediano"]
 
         lineas_ok[["cuenta_contable", "naturaleza"]] = lineas_ok["cuenta_naturaleza"].apply(
@@ -571,18 +670,30 @@ def construir_lineas_desde_ratios(
 
         lineas_ok["debito"] = np.where(lineas_ok["naturaleza"] == "D", lineas_ok["valor_sugerido"], 0)
         lineas_ok["credito"] = np.where(lineas_ok["naturaleza"] == "C", lineas_ok["valor_sugerido"], 0)
-        lineas_ok["tiene_ratio_historico"] = True
-        lineas_ok["alerta_prediccion"] = np.where(
-            lineas_ok["origen_ratio"] == "FALLBACK_PLANTILLA",
-            "Sin perfil del proveedor; se usó fallback por plantilla",
-            "",
-        )
+        lineas_ok["alerta_prediccion"] = ""
+        lineas_ok.loc[
+            lineas_ok["origen_ratio"].eq("FALLBACK_PLANTILLA"),
+            "alerta_prediccion",
+        ] = "Sin perfil del proveedor; se usÃƒÂ³ fallback por plantilla"
+        lineas_ok.loc[
+            lineas_ok["origen_ratio"].eq("PROVEEDOR_OBS_UNICA"),
+            "alerta_prediccion",
+        ] = "Ratio del proveedor con una sola observaciÃƒÂ³n"
+        lineas_ok.loc[
+            lineas_ok["origen_ratio"].eq("FALLBACK_PLANTILLA_OBS_UNICA"),
+            "alerta_prediccion",
+        ] = "Sin perfil confiable; se usÃƒÂ³ fallback por plantilla con observaciÃƒÂ³n ÃƒÂºnica"
+        lineas_ok.loc[
+            ~lineas_ok["tiene_ratio_historico"],
+            "alerta_prediccion",
+        ] = "Cuenta predicha sin ratio histÃƒÂ³rico"
 
         lineas_ok = ajustar_enteros_y_cuadre_por_factura(lineas_ok)
     else:
         lineas_ok = pd.DataFrame(columns=columnas_salida)
 
-    facturas_sin_ratio = facturas.loc[~facturas["id_factura"].astype("string").isin(ids_con_ratio)].copy()
+    ids_con_plantilla = set(lineas_ok["id_factura"].astype("string")) if "id_factura" in lineas_ok.columns else set()
+    facturas_sin_ratio = facturas.loc[~facturas["id_factura"].astype("string").isin(ids_con_plantilla)].copy()
 
     if not facturas_sin_ratio.empty:
         facturas_sin_ratio["origen_ratio"] = "SIN_PERFIL"
@@ -811,6 +922,14 @@ def exportar_archivo_plantilla(
 
 
 def serializar_plantilla_cuentas(valor) -> str:
+    if isinstance(valor, (tuple, list, set)):
+        partes = []
+        for x in valor:
+            x = "" if pd.isna(x) else str(x).strip()
+            if x != "":
+                partes.append(x)
+        return " | ".join(sorted(partes))
+
     if pd.isna(valor):
         return ""
 
@@ -822,17 +941,29 @@ def serializar_plantilla_cuentas(valor) -> str:
             valor = ast.literal_eval(texto)
         except Exception:
             return texto
-
-    if isinstance(valor, (tuple, list, set)):
-        partes = []
-        for x in valor:
-            x = "" if pd.isna(x) else str(x).strip()
-            if x != "":
-                partes.append(x)
-        return " | ".join(sorted(partes))
+        if isinstance(valor, (tuple, list, set)):
+            return serializar_plantilla_cuentas(valor)
 
     texto = str(valor).strip()
     return texto
+
+
+def describir_diferencia_plantillas(real, predicha) -> str:
+    from collections import Counter
+
+    cuentas_real = Counter(deserializar_plantilla_cuentas(real))
+    cuentas_predicha = Counter(deserializar_plantilla_cuentas(predicha))
+
+    faltan = list((cuentas_real - cuentas_predicha).elements())
+    sobran = list((cuentas_predicha - cuentas_real).elements())
+    partes = []
+
+    if faltan:
+        partes.append("FALTAN: " + serializar_plantilla_cuentas(faltan))
+    if sobran:
+        partes.append("SOBRAN: " + serializar_plantilla_cuentas(sobran))
+
+    return " | ".join(partes)
 
 
 def construir_resumen_plantilla_predicha(
@@ -851,9 +982,9 @@ def construir_resumen_plantilla_predicha(
 
     base = lineas_sugeridas.loc[
         lineas_sugeridas.get(
-            "tiene_ratio_historico",
-            pd.Series(False, index=lineas_sugeridas.index),
-        ).fillna(False)
+            "cuenta_naturaleza",
+            pd.Series(pd.NA, index=lineas_sugeridas.index),
+        ).notna()
     ].copy()
 
     if base.empty:
@@ -900,21 +1031,14 @@ def construir_validacion_prediccion(
     lineas_sugeridas: pd.DataFrame,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     columnas_detalle = [
-        "id_factura",
-        "llave_factura",
-        "llave_asiento",
-        "estado_match",
-        "nombre_tercero_real",
-        "nit_real_norm",
-        "plantilla_cuentas_dc_real",
-        "nombre_proveedor_predicho",
-        "nit_predicho_norm",
-        "plantilla_cuentas_dc_predicha",
-        "acierto_nit",
-        "acierto_plantilla",
-        "acierto_llave_nit_plantilla",
-        "tiene_plantilla_predicha",
-        "n_lineas_predichas",
+        "id factura",
+        "estado match",
+        "nombre tercero",
+        "nit",
+        "plantilla real",
+        "plantilla predicha",
+        "cuentas diferentes",
+        "acierto plantilla",
     ]
 
     if not ruta_movimientos_reales.exists():
@@ -1028,19 +1152,32 @@ def construir_validacion_prediccion(
     detalle["tiene_plantilla_predicha"] = (
         detalle["plantilla_cuentas_dc_predicha"].astype("string").str.strip().ne("")
     )
-    detalle["acierto_nit"] = detalle["nit_real_norm"] == detalle["nit_predicho_norm"]
     detalle["acierto_plantilla"] = (
         detalle["plantilla_cuentas_dc_real"]
         == detalle["plantilla_cuentas_dc_predicha"]
     )
-    detalle["acierto_llave_nit_plantilla"] = (
-        detalle["acierto_nit"] & detalle["acierto_plantilla"]
+    detalle["cuentas_diferentes"] = detalle.apply(
+        lambda row: describir_diferencia_plantillas(
+            row.get("plantilla_cuentas_dc_real"),
+            row.get("plantilla_cuentas_dc_predicha"),
+        ),
+        axis=1,
+    )
+    detalle = detalle.rename(
+        columns={
+            "id_factura": "id factura",
+            "estado_match": "estado match",
+            "nombre_tercero_real": "nombre tercero",
+            "nit_real_norm": "nit",
+            "plantilla_cuentas_dc_real": "plantilla real",
+            "plantilla_cuentas_dc_predicha": "plantilla predicha",
+            "cuentas_diferentes": "cuentas diferentes",
+            "acierto_plantilla": "acierto plantilla",
+        }
     )
 
     total = len(detalle)
-    aciertos_nit = int(detalle["acierto_nit"].sum())
-    aciertos_plantilla = int(detalle["acierto_plantilla"].sum())
-    aciertos_llave = int(detalle["acierto_llave_nit_plantilla"].sum())
+    aciertos_plantilla = int(detalle["acierto plantilla"].sum())
     con_plantilla = int(detalle["tiene_plantilla_predicha"].sum())
 
     resumen = pd.DataFrame(
@@ -1048,20 +1185,10 @@ def construir_validacion_prediccion(
             {"indicador": "validacion_ejecutada", "valor": "SI"},
             {"indicador": "asientos_validados", "valor": total},
             {"indicador": "asientos_con_plantilla_predicha", "valor": con_plantilla},
-            {"indicador": "aciertos_nit", "valor": aciertos_nit},
             {"indicador": "aciertos_plantilla", "valor": aciertos_plantilla},
-            {"indicador": "aciertos_llave_nit_plantilla", "valor": aciertos_llave},
-            {
-                "indicador": "pct_acierto_nit",
-                "valor": round(aciertos_nit / total, 4) if total else np.nan,
-            },
             {
                 "indicador": "pct_acierto_plantilla",
                 "valor": round(aciertos_plantilla / total, 4) if total else np.nan,
-            },
-            {
-                "indicador": "pct_acierto_llave_nit_plantilla",
-                "valor": round(aciertos_llave / total, 4) if total else np.nan,
             },
         ]
     )
@@ -1091,7 +1218,7 @@ def exportar_validacion_prediccion(
 
 
 # =========================================================
-# EJECUCIÓN
+# EJECUCIÃ“N
 # =========================================================
 
 validar_archivo(
@@ -1205,7 +1332,7 @@ print("Líneas hoja sin_sugerencia:", len(sin_sugerencia_df))
 
 
 # =========================================================
-# VALIDACIÓN CONTRA PRUEBA DE FACTURACIÓN
+# VALIDACIÃ“N CONTRA PRUEBA DE FACTURACIÃ“N
 # =========================================================
 
 detalle_validacion_df, resumen_validacion_df = exportar_validacion_prediccion(
@@ -1223,14 +1350,11 @@ if not detalle_validacion_df.empty:
     print("\nDetalle validación exportado en:")
     print(ruta_salida_validacion)
     pct_llave = resumen_validacion_df.loc[
-        resumen_validacion_df["indicador"] == "pct_acierto_llave_nit_plantilla",
+        resumen_validacion_df["indicador"] == "pct_acierto_plantilla",
         "valor",
     ]
     if not pct_llave.empty:
-        print(
-            "% acierto llave nit+plantilla:",
-            f"{float(pct_llave.iloc[0]) * 100:.2f}%",
-        )
+        print("% acierto plantilla:", f"{float(pct_llave.iloc[0]) * 100:.2f}%")
 
 
 # =========================================================
