@@ -30,6 +30,11 @@ from funciones_de_limpieza_base_datos_factura import (
     texto_contiene_factura,
 )
 
+
+# =========================================================
+# OPCIONES
+# =========================================================
+
 UVT_2026 = 52374
 UMBRAL_RF_SERVICIOS = 2 * UVT_2026
 UMBRAL_RETEICA_BOGOTA_SERVICIOS = 4 * UVT_2026
@@ -40,9 +45,15 @@ UMBRAL_NULOS_VARIABLE = 0.95
 UMBRAL_ALTA_CARDINALIDAD = 0.80
 MAX_COLUMNAS_ENCODING = 60
 
+
+# =========================================================
+# COLUMNAS
+# =========================================================
+
 COLUMNAS_FUGA_TARGET = [
-    "plantilla_cuentas", "plantilla_cuentas_dc", "cuenta_naturaleza",
-    "concepto_concat", "llave_factura", "llave_asiento",
+    "plantilla_cuentas", "plantilla_cuentas_dc",
+    "cuenta_naturaleza", "concepto_concat",
+    "llave_factura", "llave_asiento",
 ]
 
 COLUMNAS_FACTURAS = [
@@ -51,7 +62,8 @@ COLUMNAS_FACTURAS = [
     "ciudad_proveedor", "tax_level_proveedor", "tax_scheme_id",
     "tax_scheme_nombre", "codigo_industria_proveedor",
     "cantidad_lineas_xml", "line_extension_amount",
-    "tax_exclusive_amount", "tax_inclusive_amount", "payable_amount",
+    "tax_exclusive_amount", "tax_inclusive_amount",
+    "payable_amount",
     "iva_total", "inc_total", "descuento_total", "recargo_total",
     "tiene_iva", "tiene_inc", "flag_descuento", "flag_recargo",
     "cantidad_items_total", "descripcion_item_1", "item1_proveedor",
@@ -61,15 +73,18 @@ COLUMNAS_FACTURAS = [
 ]
 
 COLUMNAS_MODELO_AUTOG = [
-    "nit_proveedor_norm", "ciudad_proveedor_modelo", "tax_level_proveedor_limpio",
-    "tax_scheme_id_limpio", "tax_scheme_nombre_limpio", "codigo_industria_proveedor_limpio",
+    "nit_proveedor_norm", "ciudad_proveedor_modelo",
+    "tax_level_proveedor_limpio", "tax_scheme_id_limpio",
+    "tax_scheme_nombre_limpio",
+    "codigo_industria_proveedor_limpio",
     "fecha_emision",
-    "line_extension_amount", "tax_exclusive_amount",
-    "tax_inclusive_amount","payable_amount","descuento_total","recargo_total","cantidad_items_total",
-    "valor_base_sugerido", "valor_cxp_sugerido",
-    "tiene_iva","tiene_inc","flag_descuento","flag_recargo","flag_umbral_rf_servicios",
-    "flag_umbral_reteica_bogota_servicios","flag_umbral_reteica_bogota_compras","flag_diferencia_payable_tax_inclusive",
-    "standard_item_identification_limpio", "descripciones_lineas_limpia_modelo",
+    "payable_amount", "descuento_total", "recargo_total",
+    "tiene_iva", "tiene_inc", "flag_descuento",
+    "flag_recargo", "flag_umbral_rf_servicios",
+    "flag_umbral_reteica_bogota_servicios",
+    "flag_umbral_reteica_bogota_compras",
+    "flag_diferencia_payable_tax_inclusive",
+    "standard_item_identification_limpio",
     "target_plantilla_cuentas",
 ]
 
@@ -211,9 +226,10 @@ def procesar_facturas(
 
     cols_texto_basico = [
         "id_carga", "id_factura", "cufe", "factura_completa",
-        "nombre_proveedor", "ciudad_proveedor", "tax_level_proveedor",
-        "tax_scheme_id", "tax_scheme_nombre",
-        "codigo_industria_proveedor", "descripcion_item_1",
+        "nombre_proveedor", "ciudad_proveedor",
+        "tax_level_proveedor", "tax_scheme_id",
+        "tax_scheme_nombre", "codigo_industria_proveedor",
+        "descripcion_item_1",
         "item1_proveedor", "observaciones",
     ]
     for col in cols_texto_basico:
@@ -229,7 +245,10 @@ def procesar_facturas(
     for col in ["id_factura", "factura_completa", "cufe"]:
         df[f"{col}_norm"] = df[col].apply(normalizar_alfanumerico)
 
-    carpeta_xml = resolver_carpeta_xml_facturas(ruta_excel, ruta_xml_descripciones)
+    carpeta_xml = resolver_carpeta_xml_facturas(
+        ruta_excel,
+        ruta_xml_descripciones,
+    )
     df = agregar_descripciones_xml_por_cufe(df, carpeta_xml)
 
     for col in ["standard_item_identification", "descripciones_lineas_limpia"]:
@@ -308,25 +327,25 @@ def procesar_facturas(
     ]:
         df[col] = df[col].fillna(0)
 
-    df["tiene_iva"] = (df["iva_total"] > 0).astype(int)
-    df["tiene_inc"] = (df["inc_total"] > 0).astype(int)
+    df["tiene_iva"] = df["iva_total"] > 0
+    df["tiene_inc"] = df["inc_total"] > 0
     df["flag_descuento"] = (
         (df["descuento_total"] > 0) | (df["flag_descuento"] == 1)
-    ).astype(int)
+    ).astype(bool)
     df["flag_recargo"] = (
         (df["recargo_total"] > 0) | (df["flag_recargo"] == 1)
-    ).astype(int)
+    ).astype(bool)
 
     base_ret = df["tax_exclusive_amount"].fillna(0)
     df["flag_umbral_rf_servicios"] = (
         base_ret >= UMBRAL_RF_SERVICIOS
-    ).astype(int)
+    ).astype(bool)
     df["flag_umbral_reteica_bogota_servicios"] = (
         base_ret >= UMBRAL_RETEICA_BOGOTA_SERVICIOS
-    ).astype(int)
+    ).astype(bool)
     df["flag_umbral_reteica_bogota_compras"] = (
         base_ret >= UMBRAL_RETEICA_BOGOTA_COMPRAS
-    ).astype(int)
+    ).astype(bool)
 
     df["total_impuestos"] = df["iva_total"] + df["inc_total"]
     df["base_mas_impuestos"] = df["base_amount"] + df["total_impuestos"]
@@ -339,7 +358,7 @@ def procesar_facturas(
             df["payable_amount"].fillna(0)
             - df["tax_inclusive_amount"].fillna(0)
         ).abs() > 0.01
-    ).astype(int)
+    ).astype(bool)
 
     df["flag_sin_nit"] = df["nit_proveedor_norm"].isna()
     df["flag_sin_factura"] = df["factura_match_norm"].isna()
@@ -398,8 +417,8 @@ def procesar_movimientos(
     cols_texto_basico = [
         "tipo_doc", "numero_doc", "cuenta", "nombre_cuenta",
         "identidad", "nombre_tercero", "concepto",
-        "codigo_centro_costo", "centro_costo", "usuario",
-        "numero_movil", "nombre_centro_costo",
+        "codigo_centro_costo", "centro_costo",
+        "usuario", "numero_movil", "nombre_centro_costo",
     ]
     for col in cols_texto_basico:
         df[f"{col}_limpio"] = df[col].apply(normalizar_texto_basico)

@@ -144,6 +144,7 @@ carpeta_salida.mkdir(parents=True, exist_ok=True)
 ruta_facturas_nuevas = base / "facturas_a_predecir.xlsx"
 ruta_modelo_actual = carpeta_metricas / "ruta_modelo_actual.txt"
 ruta_columnas_modelo = carpeta_metricas / "columnas_modelo.json"
+ruta_dataset_autogluon = carpeta_salida / "dataset_autogluon.xlsx"
 ruta_contabilidad = Path(r"C:/Users/eduar/OneDrive - TCP BAAS S.A.S/Automatización/facturas_bigquery/contabilidad.xlsx")
 
 rutas_posibles_ratios = [
@@ -180,6 +181,7 @@ col_nit = "nit_proveedor_norm"
 col_target = "target_plantilla_cuentas"
 col_prediccion = "plantilla_predicha"
 col_total = "payable_amount"
+col_flag_revision_tercero = "flag_revision_por_tercero"
 min_observaciones = 2
 
 threshold_alta = 0.70
@@ -767,6 +769,15 @@ def construir_archivo_plantilla(
         .fillna("")
         .str.strip()
     )
+    flag_revision = base_fact.get(
+        col_flag_revision_tercero,
+        pd.Series(False, index=base_fact.index),
+    ).fillna(False)
+    base_fact["FLAG REVISION POR TERCERO"] = np.where(
+        flag_revision.astype(bool),
+        "SI",
+        "NO",
+    )
 
     base_fact["payable_amount"] = numero_seguro(base_fact.get("payable_amount", pd.Series(index=base_fact.index)))
     base_fact["iva_total"] = numero_seguro(base_fact.get("iva_total", pd.Series(index=base_fact.index)))
@@ -793,6 +804,7 @@ def construir_archivo_plantilla(
         "ica_total",
         "base_amount",
         "CONFIABILIDAD DE PREDICCION",
+        "FLAG REVISION POR TERCERO",
     ]
     base_fact = base_fact[[c for c in columnas_base if c in base_fact.columns]].copy()
 
@@ -804,11 +816,17 @@ def construir_archivo_plantilla(
         plantilla = pd.DataFrame(columns=[
             "FECHA", "TIPO DOCUMENTO", "NUMERO DOCUMENTO", "IDENTIDAD", "CUENTA",
             "NOMBRE", "CONCEPTO", "VALOR", "NATURALEZA", "CONFIABILIDAD DE PREDICCION",
+            "FLAG REVISION POR TERCERO",
         ])
         facturas_con_sugerencia = set()
     else:
         plantilla = lineas_ok.merge(
-            base_fact[["id_factura", "NUMERO DOCUMENTO", "FECHA", "TIPO DOCUMENTO", "IDENTIDAD", "CONFIABILIDAD DE PREDICCION"]],
+            base_fact[[
+                "id_factura", "NUMERO DOCUMENTO", "FECHA",
+                "TIPO DOCUMENTO", "IDENTIDAD",
+                "CONFIABILIDAD DE PREDICCION",
+                "FLAG REVISION POR TERCERO",
+            ]],
             on="id_factura",
             how="left",
         )
@@ -849,6 +867,7 @@ def construir_archivo_plantilla(
                 "VALOR",
                 "NATURALEZA",
                 "CONFIABILIDAD DE PREDICCION",
+                "FLAG REVISION POR TERCERO",
             ]
         ].copy()
 
@@ -884,6 +903,7 @@ def construir_archivo_plantilla(
                 "VALOR": entero_seguro(fila.get(col_valor, 0)),
                 "NATURALEZA": "",
                 "CONFIABILIDAD DE PREDICCION": fila.get("CONFIABILIDAD DE PREDICCION"),
+                "FLAG REVISION POR TERCERO": fila.get("FLAG REVISION POR TERCERO"),
             })
 
     sin_sugerencia = pd.DataFrame(filas_sin, columns=[
@@ -897,6 +917,7 @@ def construir_archivo_plantilla(
         "VALOR",
         "NATURALEZA",
         "CONFIABILIDAD DE PREDICCION",
+        "FLAG REVISION POR TERCERO",
     ])
 
     return plantilla, sin_sugerencia
@@ -964,6 +985,79 @@ def describir_diferencia_plantillas(real, predicha) -> str:
         partes.append("SOBRAN: " + serializar_plantilla_cuentas(sobran))
 
     return " | ".join(partes)
+
+
+def obtener_terceros_revision_ultimo_mes(
+    predictor: TabularPredictor,
+    columnas_modelo: list[str],
+) -> set[str]:
+    if not ruta_dataset_autogluon.exists():
+        print(
+            "\nNo se encontró dataset_autogluon.xlsx para calcular "
+            "flag de revisión por tercero."
+        )
+        return set()
+
+    historico = pd.read_excel(ruta_dataset_autogluon, dtype="object")
+    requeridas = [col_nit, col_target, "fecha_emision"]
+    faltantes = [c for c in requeridas if c not in historico.columns]
+
+    if faltantes:
+        print(
+            "\nNo se pudo calcular flag de revisión por tercero. "
+            "Faltan columnas en dataset_autogluon.xlsx:"
+        )
+        print(faltantes)
+        return set()
+
+    fechas = pd.to_datetime(historico["fecha_emision"], errors="coerce")
+    historico = historico.loc[
+        historico[col_nit].notna()
+        & historico[col_target].notna()
+        & fechas.notna()
+    ].copy()
+    fechas = fechas.loc[historico.index]
+
+    if historico.empty:
+        print("\nSin histórico con match para calcular revisión por tercero.")
+        return set()
+
+    periodos = fechas.dt.to_period("M")
+    ultimo_periodo = periodos.max()
+    historico_ultimo_mes = historico.loc[periodos.eq(ultimo_periodo)].copy()
+
+    if historico_ultimo_mes.empty:
+        print("\nSin facturas del último mes histórico para validar terceros.")
+        return set()
+
+    X_validacion = preparar_X(historico_ultimo_mes, columnas_modelo)
+    predicciones = predictor.predict(X_validacion)
+
+    real = historico_ultimo_mes[col_target].apply(
+        serializar_plantilla_cuentas
+    )
+    predicho = pd.Series(predicciones, index=historico_ultimo_mes.index).apply(
+        serializar_plantilla_cuentas
+    )
+    errores = real.astype("string").str.strip() != (
+        predicho.astype("string").str.strip()
+    )
+
+    terceros_revision = set(
+        historico_ultimo_mes.loc[errores, col_nit]
+        .astype("string")
+        .fillna("")
+        .str.strip()
+    )
+    terceros_revision.discard("")
+
+    print("\nValidación último mes para flag por tercero:")
+    print("Mes validado:", str(ultimo_periodo))
+    print("Facturas validadas:", len(historico_ultimo_mes))
+    print("Errores detectados:", int(errores.sum()))
+    print("Terceros marcados por error histórico:", len(terceros_revision))
+
+    return terceros_revision
 
 
 def construir_resumen_plantilla_predicha(
@@ -1270,6 +1364,28 @@ facturas_predichas = predecir_facturas(
     columnas_modelo=columnas_modelo,
 )
 
+terceros_revision = obtener_terceros_revision_ultimo_mes(
+    predictor=predictor,
+    columnas_modelo=columnas_modelo,
+)
+flag_revision_historica = (
+    facturas_predichas.get(col_nit, pd.Series(index=facturas_predichas.index))
+    .astype("string")
+    .fillna("")
+    .str.strip()
+    .isin(terceros_revision)
+)
+flag_revision_baja = (
+    facturas_predichas["confiabilidad_prediccion"]
+    .astype("string")
+    .fillna("")
+    .str.upper()
+    .eq("BAJA")
+)
+facturas_predichas[col_flag_revision_tercero] = (
+    flag_revision_historica | flag_revision_baja
+)
+
 print("\nDistribución de sugerencias:")
 print(facturas_predichas["estado_sugerencia"].value_counts(dropna=False))
 
@@ -1278,6 +1394,9 @@ print(facturas_predichas["confiabilidad_prediccion"].value_counts(dropna=False))
 
 print("\nDistribución de plantillas predichas:")
 print(facturas_predichas[col_prediccion].value_counts(dropna=False).head(20))
+
+print("\nFacturas marcadas con revision por tercero:")
+print(facturas_predichas[col_flag_revision_tercero].value_counts(dropna=False))
 
 
 # =========================================================

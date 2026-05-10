@@ -14,6 +14,42 @@ carpeta_salida.mkdir(parents=True, exist_ok=True)
 
 ruta_facturas = base / "base datos factura.xlsx"
 ruta_contabilidad = base / "contabilidad.xlsx"
+ruta_match_excel = carpeta_salida / "match_factura_asiento.xlsx"
+
+
+# =========================================================
+# OPCIONES
+# =========================================================
+
+hoja_facturas = 0
+hoja_movimientos = 0
+empresa = "empresa_demo"
+
+tablas_resumen = {
+    "Facturas": "facturas_df",
+    "Asientos FC": "asientos_fc_df",
+    "Matches": "match_df",
+    "Dataset modelo": "dataset_modelo_df",
+    "Dataset AutoGluon": "dataset_autogluon_df",
+    "Perfil ratios valores": "perfil_ratios_valores_df",
+}
+
+
+estados_ok = ["OK_UNICO", "OK_TEXTO", "OK_VALOR"]
+
+exportaciones = {
+    "facturas_limpias.xlsx": "facturas_df",
+    "asientos_fc.xlsx": "asientos_fc_df",
+    "dataset_modelo.xlsx": "dataset_modelo_df",
+    "dataset_autogluon.xlsx": "dataset_autogluon_df",
+    "perfil_ratios_valores.xlsx": "perfil_ratios_valores_df",
+}
+
+columnas_no_exportar = [
+    "descripciones_lineas_limpia",
+    "descripciones_lineas_limpia_modelo",
+    "descripciones_lineas_original",
+]
 
 columnas_movimientos = {
     "fecha_mov": "FECHA",
@@ -36,9 +72,9 @@ columnas_movimientos = {
 resultados = ejecutar_pipeline(
     ruta_facturas=str(ruta_facturas),
     ruta_movimientos=str(ruta_contabilidad),
-    hoja_facturas=0,
-    hoja_movimientos=0,
-    empresa="empresa_demo",
+    hoja_facturas=hoja_facturas,
+    hoja_movimientos=hoja_movimientos,
+    empresa=empresa,
     columnas_movimientos=columnas_movimientos,
 )
 
@@ -46,21 +82,6 @@ resultados = ejecutar_pipeline(
 # =========================================================
 # RESUMEN EN CONSOLA
 # =========================================================
-
-tablas_resumen = {
-    "Facturas": "facturas_df",
-    "Movimientos": "movimientos_df",
-    "Movimientos FC": "movimientos_fc_df",
-    "Asientos FC": "asientos_fc_df",
-    "Candidatos": "candidatos_df",
-    "Matches": "match_df",
-    "Dataset modelo": "dataset_modelo_df",
-    "Dataset AutoGluon": "dataset_autogluon_df",
-    "Reporte variables modelo": "reporte_variables_modelo_df",
-    "Reporte encoding modelo": "reporte_encoding_modelo_df",
-    "Líneas históricas valores": "lineas_historicas_valores_df",
-    "Perfil ratios valores": "perfil_ratios_valores_df",
-}
 
 for nombre, clave in tablas_resumen.items():
     print(f"{nombre}: {resultados[clave].shape}")
@@ -96,7 +117,6 @@ resumen_match["porcentaje_label"] = (
     resumen_match["porcentaje"] * 100
 ).round(2).astype(str) + "%"
 
-estados_ok = ["OK_UNICO", "OK_TEXTO", "OK_VALOR"]
 
 cantidad_ok = match_df["estado_match"].isin(estados_ok).sum()
 cantidad_no_ok = total_registros - cantidad_ok
@@ -122,24 +142,12 @@ print(resumen_general)
 # EXPORTAR RESULTADOS
 # =========================================================
 
-exportaciones = {
-    "facturas_limpias.xlsx": "facturas_df",
-    "movimientos_limpios.xlsx": "movimientos_df",
-    "movimientos_fc.xlsx": "movimientos_fc_df",
-    "asientos_fc.xlsx": "asientos_fc_df",
-    "candidatos_match.xlsx": "candidatos_df",
-    "dataset_modelo.xlsx": "dataset_modelo_df",
-    "dataset_autogluon.xlsx": "dataset_autogluon_df",
-    "reporte_variables_modelo.xlsx": "reporte_variables_modelo_df",
-    "reporte_encoding_modelo.xlsx": "reporte_encoding_modelo_df",
-    "lineas_historicas_valores.xlsx": "lineas_historicas_valores_df",
-    "perfil_ratios_valores.xlsx": "perfil_ratios_valores_df",
-}
-
 for archivo, clave in exportaciones.items():
-    resultados[clave].to_excel(carpeta_salida / archivo, index=False)
-
-ruta_match_excel = carpeta_salida / "match_factura_asiento.xlsx"
+    salida = resultados[clave].drop(
+        columns=columnas_no_exportar,
+        errors="ignore",
+    )
+    salida.to_excel(carpeta_salida / archivo, index=False)
 
 with pd.ExcelWriter(ruta_match_excel, engine="openpyxl") as writer:
     match_df.to_excel(writer, sheet_name="detalle_match", index=False)

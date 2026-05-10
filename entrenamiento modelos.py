@@ -20,48 +20,59 @@ carpeta_metricas.mkdir(parents=True, exist_ok=True)
 ruta_dataset = carpeta_salida / "dataset_autogluon.xlsx"
 
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-carpeta_modelo = Path(r"C:/modelos_autogluon") / f"modelo_autogluon_contabilidad_facturas_{timestamp}"
+carpeta_modelo = (
+    Path(r"C:/modelos_autogluon")
+    / f"modelo_autogluon_contabilidad_facturas_{timestamp}"
+)
 carpeta_modelo.mkdir(parents=True, exist_ok=True)
+
+rutas = {
+    "leaderboard": carpeta_metricas / "leaderboard_autogluon.xlsx",
+    "resumen": carpeta_metricas / "resumen_entrenamiento_autogluon.json",
+    "columnas": carpeta_metricas / "columnas_modelo.json",
+    "predicciones_training": (
+        carpeta_metricas / "predicciones_training_referencia.xlsx"
+    ),
+    "clases": carpeta_metricas / "distribucion_clases.xlsx",
+    "importancia": carpeta_metricas / "importancia_variables.xlsx",
+    "modelo_actual": carpeta_metricas / "ruta_modelo_actual.txt",
+}
+
+
+# =========================================================
+# OPCIONES
+# =========================================================
 
 target = "target_plantilla_cuentas"
 min_observaciones_por_clase = 3
 aplicar_oversampling_reciente = True
 columna_fecha_oversampling = "fecha_emision"
-meses_recientes_oversampling = 3
-factor_oversampling_reciente = 2
+meses_recientes_oversampling = 4
+factor_oversampling_reciente = 4
+autogluon_presets = "best_quality"
+autogluon_time_limit = 1500
+autogluon_dynamic_stacking = False
 
 columnas_excluir = [
-    "llave_factura",
-    "llave_asiento",
-    "estado_match",
-    "motivo_score",
-    "score_total",
-    "concepto_concat",
-    "plantilla_cuentas",
+    "llave_factura", "llave_asiento",
+    "estado_match", "motivo_score", "score_total",
+    "concepto_concat", "plantilla_cuentas",
     "plantilla_cuentas_dc",
 ]
 
 columnas_remover_del_modelo = [
-    "empresa",
-    "nombre_proveedor_modelo",
-    "item1_proveedor_modelo",
-    "descripcion_item_1_modelo",
-    "descripcion_modelo_norm",
-    "cantidad_lineas_xml",
-    "n_registros_sugeridos",
-    "iva_total",
-    "inc_total",
-    "valor_iva_sugerido",
-    "valor_inc_sugerido",
-    "prefijo_factura",
-    "anio",
-    "mes",
-    "trimestre",
+    "empresa", "nombre_proveedor_modelo",
+    "item1_proveedor_modelo", "descripcion_item_1_modelo",
+    "descripcion_modelo_norm", "iva_total", "inc_total",
+    "tax_exclusive_amount", "tax_inclusive_amount",
+    "line_extension_amount", "cantidad_items_total",
+    "valor_base_sugerido", "valor_iva_sugerido",
+    "valor_inc_sugerido", "valor_cxp_sugerido",
+    "prefijo_factura", "anio", "mes", "trimestre",
 ]
 
 columnas_categoricas_forzadas = [
-    "nit_proveedor_norm",
-    "codigo_industria_proveedor_limpio",
+    "nit_proveedor_norm", "codigo_industria_proveedor_limpio",
 ]
 
 
@@ -126,7 +137,10 @@ def resumen_dataset(df_modelo: pd.DataFrame, df_entrenable: pd.DataFrame) -> pd.
     return pd.DataFrame([
         {"indicador": "filas_modelo_original", "valor": len(df_modelo)},
         {"indicador": "filas_entrenables", "valor": len(df_entrenable)},
-        {"indicador": "columnas_modelo_original", "valor": len(df_modelo.columns)},
+        {
+            "indicador": "columnas_modelo_original",
+            "valor": len(df_modelo.columns),
+        },
         {"indicador": "variables_predictoras", "valor": len([c for c in df_entrenable.columns if c != target])},
         {"indicador": "clases_originales", "valor": df_modelo[target].nunique()},
         {"indicador": "clases_entrenables", "valor": df_entrenable[target].nunique()},
@@ -335,9 +349,9 @@ predictor = TabularPredictor(
     path=str(carpeta_modelo),
 ).fit(
     train_data=df_entrenable,
-    presets="best_quality",
-    time_limit=1500,
-    dynamic_stacking=False,
+    presets=autogluon_presets,
+    time_limit=autogluon_time_limit,
+    dynamic_stacking=autogluon_dynamic_stacking,
 )
 
 leaderboard = predictor.leaderboard(silent=True)
@@ -385,18 +399,11 @@ if importancia is not None:
 # EXPORTACIÓN
 # =========================================================
 
-rutas = {
-    "leaderboard": carpeta_metricas / "leaderboard_autogluon.xlsx",
-    "resumen": carpeta_metricas / "resumen_entrenamiento_autogluon.json",
-    "columnas": carpeta_metricas / "columnas_modelo.json",
-    "predicciones_training": carpeta_metricas / "predicciones_training_referencia.xlsx",
-    "clases": carpeta_metricas / "distribucion_clases.xlsx",
-    "importancia": carpeta_metricas / "importancia_variables.xlsx",
-    "modelo_actual": carpeta_metricas / "ruta_modelo_actual.txt",
-}
-
 leaderboard.to_excel(rutas["leaderboard"], index=False)
-revision_training.to_excel(rutas["predicciones_training"], index=False)
+revision_training.to_excel(
+    rutas["predicciones_training"],
+    index=False,
+)
 conteo_clases.to_frame("n_observaciones").to_excel(rutas["clases"])
 
 if importancia is not None:
