@@ -435,9 +435,27 @@ def predecir_facturas(
     try:
         probas = predictor.predict_proba(X)
         salida["confianza_prediccion"] = probas.max(axis=1).values
+        top_n = min(2, len(probas.columns))
+        valores_top = np.argsort(-probas.to_numpy(), axis=1)[:, :top_n]
+
+        for posicion in range(top_n):
+            col_indices = valores_top[:, posicion]
+            salida[f"plantilla_opcion_{posicion + 1}"] = [
+                probas.columns[i] for i in col_indices
+            ]
+            salida[f"confianza_opcion_{posicion + 1}"] = (
+                probas.to_numpy()[np.arange(len(probas)), col_indices]
+            )
+
+        for posicion in range(top_n, 2):
+            salida[f"plantilla_opcion_{posicion + 1}"] = pd.NA
+            salida[f"confianza_opcion_{posicion + 1}"] = np.nan
     except Exception as e:
         print("No se pudo calcular predict_proba:", e)
         salida["confianza_prediccion"] = np.nan
+        for posicion in range(2):
+            salida[f"plantilla_opcion_{posicion + 1}"] = pd.NA
+            salida[f"confianza_opcion_{posicion + 1}"] = np.nan
 
     salida["confiabilidad_prediccion"] = np.select(
         [
@@ -927,19 +945,53 @@ def exportar_archivo_plantilla(
     facturas_predichas: pd.DataFrame,
     lineas_sugeridas: pd.DataFrame,
     catalogo_cuentas: pd.DataFrame,
+    perfil_ratios: pd.DataFrame | None,
     ruta_salida: Path,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     plantilla, sin_sugerencia = construir_archivo_plantilla(
         facturas_predichas=facturas_predichas,
         lineas_sugeridas=lineas_sugeridas,
         catalogo_cuentas=catalogo_cuentas,
     )
 
+    if (
+        perfil_ratios is not None
+        and "plantilla_opcion_2" in facturas_predichas.columns
+    ):
+        facturas_opcion_2 = facturas_predichas.copy()
+        facturas_opcion_2[col_prediccion] = facturas_opcion_2[
+            "plantilla_opcion_2"
+        ]
+        facturas_opcion_2["confianza_prediccion"] = facturas_opcion_2[
+            "confianza_opcion_2"
+        ]
+        facturas_opcion_2["generar_prediccion"] = (
+            facturas_opcion_2[col_prediccion].notna()
+            & facturas_opcion_2[col_prediccion].astype("string").str.strip().ne("")
+        )
+
+        lineas_opcion_2 = construir_lineas_desde_ratios(
+            facturas_predichas=facturas_opcion_2,
+            perfil_ratios=perfil_ratios,
+        )
+        alternativas, _ = construir_archivo_plantilla(
+            facturas_predichas=facturas_opcion_2,
+            lineas_sugeridas=lineas_opcion_2,
+            catalogo_cuentas=catalogo_cuentas,
+        )
+    else:
+        alternativas = plantilla.iloc[0:0].copy()
+
     with pd.ExcelWriter(ruta_salida, engine="openpyxl") as writer:
         plantilla.to_excel(writer, sheet_name="plantilla", index=False)
         sin_sugerencia.to_excel(writer, sheet_name="sin_sugerencia", index=False)
+        alternativas.to_excel(
+            writer,
+            sheet_name="alternativas_prediccion",
+            index=False,
+        )
 
-    return plantilla, sin_sugerencia
+    return plantilla, sin_sugerencia, alternativas
 
 
 def serializar_plantilla_cuentas(valor) -> str:
@@ -1395,6 +1447,18 @@ print(facturas_predichas["confiabilidad_prediccion"].value_counts(dropna=False))
 print("\nDistribución de plantillas predichas:")
 print(facturas_predichas[col_prediccion].value_counts(dropna=False).head(20))
 
+print("\nPrimeras alternativas Top-2:")
+print(
+    facturas_predichas[
+        [
+            "plantilla_opcion_1",
+            "confianza_opcion_1",
+            "plantilla_opcion_2",
+            "confianza_opcion_2",
+        ]
+    ].head(10)
+)
+
 print("\nFacturas marcadas con revision por tercero:")
 print(facturas_predichas[col_flag_revision_tercero].value_counts(dropna=False))
 
@@ -1407,6 +1471,7 @@ ruta_ratios = obtener_ruta_ratios()
 
 if ruta_ratios is None:
     lineas_sugeridas = pd.DataFrame()
+    perfil_ratios = None
     print("\nNo se encontró perfil de ratios. Solo se exportará plantilla.")
 else:
     print("\nPerfil de ratios cargado desde:")
@@ -1437,10 +1502,11 @@ else:
         print("\nResumen control de cuadre:")
         print(control_cuadre["cuadra"].value_counts(dropna=False))
 
-plantilla_df, sin_sugerencia_df = exportar_archivo_plantilla(
+plantilla_df, sin_sugerencia_df, alternativas_df = exportar_archivo_plantilla(
     facturas_predichas=facturas_predichas,
     lineas_sugeridas=lineas_sugeridas,
     catalogo_cuentas=catalogo_cuentas,
+    perfil_ratios=perfil_ratios,
     ruta_salida=ruta_salida_plantilla,
 )
 
@@ -1448,6 +1514,7 @@ print("\nArchivo plantilla exportado en:")
 print(ruta_salida_plantilla)
 print("Líneas hoja plantilla:", len(plantilla_df))
 print("Líneas hoja sin_sugerencia:", len(sin_sugerencia_df))
+print("Líneas hoja alternativas_prediccion:", len(alternativas_df))
 
 
 # =========================================================
